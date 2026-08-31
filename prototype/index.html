@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartFill 产品原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6f4;
+      --surface: #ffffff;
+      --surface-soft: #f7f9f8;
+      --text: #17211c;
+      --muted: #64716a;
+      --border: #dfe6e2;
+      --brand: #147a52;
+      --brand-dark: #0d5d3e;
+      --brand-soft: #e9f5ef;
+      --blue: #276bd6;
+      --blue-soft: #eaf1fd;
+      --amber: #a5640c;
+      --amber-soft: #fff5dd;
+      --red: #ba3e3e;
+      --red-soft: #fff0f0;
+      --shadow: 0 14px 40px rgba(24, 51, 38, .08);
+      font-family: Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 232px 1fr; }
+    .sidebar { background: #11271d; color: #edf7f1; padding: 24px 16px; display: flex; flex-direction: column; gap: 24px; }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px; }
+    .brand-mark { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: #45c38c; color: #0b3825; font-weight: 800; }
+    .brand-name { font-size: 19px; font-weight: 700; letter-spacing: .2px; }
+    .brand-sub { color: #9ab4a6; font-size: 11px; margin-top: 2px; }
+    .nav-label { color: #789384; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 0 12px; margin-bottom: 7px; }
+    .nav { display: grid; gap: 5px; }
+    .nav button { color: #bad0c4; background: transparent; border: 0; border-radius: 9px; padding: 11px 12px; text-align: left; display: flex; gap: 10px; align-items: center; }
+    .nav button:hover, .nav button.active { color: #fff; background: #214333; }
+    .nav-icon { width: 22px; height: 22px; border-radius: 7px; background: rgba(255,255,255,.08); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+    .sidebar-foot { margin-top: auto; padding: 14px 12px; background: #193b2b; border-radius: 12px; }
+    .sidebar-foot strong { font-size: 13px; }
+    .sidebar-foot p { color: #9eb6a9; font-size: 11px; line-height: 1.6; margin: 7px 0 0; }
+    .main { min-width: 0; }
+    .topbar { height: 72px; padding: 0 30px; background: rgba(255,255,255,.94); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .breadcrumb { color: var(--muted); font-size: 13px; }
+    .top-actions { display: flex; align-items: center; gap: 12px; }
+    .env { padding: 6px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--brand-dark); font-size: 12px; font-weight: 700; }
+    .avatar { width: 36px; height: 36px; border-radius: 50%; background: #dfece5; display: grid; place-items: center; color: var(--brand-dark); font-weight: 700; }
+    .content { padding: 28px 30px 42px; max-width: 1500px; margin: 0 auto; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+    .page-head h1 { font-size: 25px; margin: 0 0 7px; letter-spacing: -.3px; }
+    .page-head p { margin: 0; color: var(--muted); font-size: 13px; }
+    .btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 9px; padding: 9px 14px; font-weight: 650; font-size: 13px; }
+    .btn:hover { border-color: #b6c5bd; }
+    .btn-primary { background: var(--brand); border-color: var(--brand); color: #fff; box-shadow: 0 5px 15px rgba(20,122,82,.2); }
+    .btn-danger { color: var(--red); border-color: #edcccc; background: #fffafa; }
+    .btn-sm { padding: 7px 10px; font-size: 12px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 15px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 1px 1px rgba(0,0,0,.01); }
+    .metric { padding: 18px 20px; }
+    .metric-label { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; }
+    .metric-value { font-size: 28px; font-weight: 760; margin: 10px 0 4px; letter-spacing: -.5px; }
+    .metric-foot { color: var(--muted); font-size: 11px; }
+    .metric-foot strong { color: var(--brand); }
+    .section { margin-top: 20px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
+    .section-title h2 { font-size: 15px; margin: 0; }
+    .section-title a { color: var(--brand); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 650; padding: 12px 15px; border-bottom: 1px solid var(--border); background: var(--surface-soft); }
+    td { padding: 14px 15px; border-bottom: 1px solid #edf1ef; font-size: 12px; }
+    tr:last-child td { border-bottom: 0; }
+    .status { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 5px 8px; font-size: 11px; font-weight: 700; }
+    .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .success { color: var(--brand-dark); background: var(--brand-soft); }
+    .running { color: var(--blue); background: var(--blue-soft); }
+    .warning { color: var(--amber); background: var(--amber-soft); }
+    .failed { color: var(--red); background: var(--red-soft); }
+    .progress { height: 7px; background: #e9eeeb; border-radius: 10px; overflow: hidden; }
+    .progress > span { display: block; height: 100%; background: var(--brand); border-radius: inherit; }
+    .quick-card { padding: 18px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    .quick-card h3 { margin: 0 0 6px; font-size: 14px; }
+    .quick-card p { margin: 0; color: var(--muted); font-size: 12px; }
+    .steps { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 22px; }
+    .step { display: flex; align-items: center; gap: 10px; color: var(--muted); position: relative; }
+    .step:not(:last-child)::after { content: ""; position: absolute; left: 40px; right: 10px; top: 15px; height: 1px; background: #d7dfda; z-index: 0; }
+    .step-no { position: relative; z-index: 1; width: 30px; height: 30px; border-radius: 50%; border: 1px solid #cdd8d2; background: var(--surface); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+    .step.active { color: var(--brand-dark); font-weight: 700; }
+    .step.active .step-no, .step.done .step-no { background: var(--brand); color: #fff; border-color: var(--brand); }
+    .form-card { padding: 24px; }
+    .form-card h2 { margin: 0 0 20px; font-size: 16px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .field label { display: block; font-size: 12px; font-weight: 650; margin-bottom: 7px; }
+    .field input, .field select { width: 100%; height: 42px; border: 1px solid #ccd7d1; border-radius: 8px; padding: 0 11px; background: #fff; color: var(--text); }
+    .field small { display: block; color: var(--muted); font-size: 11px; margin-top: 6px; }
+    .upload { border: 1.5px dashed #aebfb6; background: var(--surface-soft); border-radius: 10px; padding: 25px; text-align: center; }
+    .upload strong { display: block; font-size: 14px; margin-bottom: 6px; }
+    .upload span { color: var(--muted); font-size: 11px; }
+    .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+    .mapping-layout { display: grid; grid-template-columns: 1.35fr .95fr; gap: 18px; }
+    .browser { overflow: hidden; }
+    .browser-bar { height: 42px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #eef2ef; border-bottom: 1px solid var(--border); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #c4cec9; }
+    .address { height: 25px; flex: 1; border-radius: 6px; background: #fff; margin-left: 7px; padding: 5px 10px; color: #738078; font-size: 10px; }
+    .browser-page { background: #f7faf8; padding: 22px; min-height: 570px; }
+    .demo-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: #fff; border: 1px solid #e1e8e4; border-radius: 9px; }
+    .demo-logo { color: #255b44; font-weight: 750; }
+    .demo-profile { color: #76837b; font-size: 11px; }
+    .demo-form { width: min(590px, 100%); margin: 18px auto; background: #fff; padding: 22px; border-radius: 10px; border: 1px solid #e0e7e3; }
+    .demo-form h3 { margin: 0 0 3px; }
+    .demo-form > p { margin: 0 0 18px; color: #7a8780; font-size: 11px; }
+    .demo-row { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 10px; margin: 11px 0; position: relative; }
+    .demo-row label { text-align: right; color: #526058; font-size: 11px; }
+    .demo-input { height: 35px; border: 1px solid #ccd5d0; border-radius: 6px; padding: 9px; color: #8a948f; font-size: 11px; }
+    .demo-row.detected .demo-input { border: 2px solid var(--brand); background: #f7fffb; }
+    .marker { position: absolute; right: -10px; top: -10px; background: var(--brand); color: #fff; border-radius: 12px; padding: 3px 7px; font-size: 9px; font-weight: 700; }
+    .demo-submit { margin: 18px 0 0 100px; display: inline-block; padding: 8px 18px; background: #2e7d5a; color: #fff; border-radius: 6px; font-size: 11px; }
+    .mapping-panel { padding: 18px; }
+    .mapping-panel h2 { font-size: 15px; margin: 0 0 5px; }
+    .mapping-panel > p { margin: 0 0 15px; color: var(--muted); font-size: 11px; }
+    .mapping-item { padding: 13px 0; border-bottom: 1px solid #e9eeeb; }
+    .mapping-item:last-of-type { border-bottom: 0; }
+    .mapping-top { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .mapping-top strong { font-weight: 700; }
+    .confidence { color: var(--brand); font-size: 11px; font-weight: 750; }
+    .mapping-target { margin: 7px 0 5px; padding: 8px 10px; background: var(--surface-soft); border-radius: 7px; font-size: 11px; display: flex; justify-content: space-between; }
+    .evidence { color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .sensitive-note { padding: 10px; background: var(--amber-soft); color: #76501b; border-radius: 8px; font-size: 10px; margin-top: 12px; }
+    .runtime-grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(280px,.8fr); gap: 18px; }
+    .runtime-browser { min-height: 480px; }
+    .runtime-side { display: grid; gap: 14px; align-content: start; }
+    .runtime-card { padding: 17px; }
+    .runtime-card h3 { margin: 0 0 13px; font-size: 13px; }
+    .runtime-current { padding: 12px; background: var(--brand-soft); border-radius: 8px; }
+    .runtime-current strong { display: block; color: var(--brand-dark); font-size: 12px; }
+    .runtime-current span { display: block; margin-top: 4px; color: #4f6c5c; font-size: 10px; }
+    .mini-stat { display: flex; justify-content: space-between; font-size: 11px; margin: 10px 0; color: var(--muted); }
+    .mini-stat strong { color: var(--text); }
+    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .log { display: grid; gap: 10px; }
+    .log-item { display: grid; grid-template-columns: 48px 8px 1fr; gap: 8px; color: var(--muted); font-size: 10px; align-items: start; }
+    .log-point { width: 7px; height: 7px; border-radius: 50%; background: #8da398; margin-top: 3px; }
+    .log-item.latest .log-point { background: var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+    .log-item.latest div:last-child { color: var(--text); font-weight: 650; }
+    .runtime-demo { width: 92%; margin: 20px auto; background: #fff; border: 1px solid #e1e8e4; border-radius: 10px; padding: 20px; }
+    .runtime-fill { height: 32px; background: #f2f5f3; border-radius: 6px; margin: 10px 0; position: relative; overflow: hidden; }
+    .runtime-fill::after { content: ""; position: absolute; inset: 0; width: 74%; background: #e5f5ed; border-right: 2px solid var(--brand); }
+    .runtime-popup { width: 58%; margin: 20px auto; background: #fff; border: 1px solid #dbe4df; box-shadow: var(--shadow); border-radius: 12px; padding: 18px; text-align: center; }
+    .runtime-popup strong { display: block; margin-bottom: 7px; }
+    .runtime-popup p { color: var(--muted); font-size: 10px; line-height: 1.6; }
+    .exception-layout { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
+    .exception-list { padding: 8px; }
+    .exception-row { padding: 14px; border-radius: 9px; display: grid; grid-template-columns: 36px 1fr auto; gap: 11px; align-items: center; }
+    .exception-row + .exception-row { border-top: 1px solid #edf1ef; }
+    .exception-row.selected { background: var(--amber-soft); border: 0; }
+    .exception-icon { width: 34px; height: 34px; border-radius: 9px; background: #fff; display: grid; place-items: center; color: var(--amber); font-weight: 800; }
+    .exception-row strong { display: block; font-size: 12px; }
+    .exception-row span { color: var(--muted); font-size: 10px; }
+    .exception-row time { color: var(--muted); font-size: 10px; }
+    .exception-detail { padding: 20px; }
+    .exception-detail h2 { margin: 0 0 6px; font-size: 16px; }
+    .exception-detail > p { margin: 0 0 16px; color: var(--muted); font-size: 11px; }
+    .screen-crop { background: #f2f5f3; border-radius: 9px; padding: 17px; border: 1px solid #e1e7e4; }
+    .crop-field { padding: 12px; background: #fff; border: 2px solid var(--amber); border-radius: 7px; font-size: 11px; position: relative; }
+    .crop-field + .crop-field { margin-top: 10px; border-color: #d3dcd7; }
+    .candidate { margin-top: 15px; }
+    .candidate-head { display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; }
+    .candidate p { color: var(--muted); font-size: 10px; line-height: 1.6; }
+    .detail-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    .report-hero { padding: 24px; display: grid; grid-template-columns: 1.2fr 1fr; gap: 30px; align-items: center; }
+    .report-score { display: flex; align-items: center; gap: 18px; }
+    .score-ring { width: 92px; height: 92px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--brand) 0 94%, #e7ece9 94%); position: relative; }
+    .score-ring::after { content: ""; position: absolute; inset: 9px; background: #fff; border-radius: 50%; }
+    .score-ring strong { z-index: 1; font-size: 22px; }
+    .report-score h2 { margin: 0 0 6px; font-size: 18px; }
+    .report-score p { color: var(--muted); font-size: 11px; margin: 0; }
+    .bars { display: grid; gap: 10px; }
+    .bar-row { display: grid; grid-template-columns: 60px 1fr 34px; gap: 8px; align-items: center; font-size: 10px; color: var(--muted); }
+    .bar { height: 7px; border-radius: 10px; background: #edf1ef; overflow: hidden; }
+    .bar span { display: block; height: 100%; border-radius: inherit; }
+    .bar .b1 { width: 94%; background: var(--brand); }
+    .bar .b2 { width: 4%; background: #d8a442; }
+    .bar .b3 { width: 2%; background: #d36363; }
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 80px 1fr; }
+      .brand-name, .brand-sub, .nav button span:not(.nav-icon), .nav-label, .sidebar-foot { display: none; }
+      .brand { justify-content: center; padding: 0; }
+      .nav button { justify-content: center; }
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+      .mapping-layout, .runtime-grid, .exception-layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">S</div>
+        <div><div class="brand-name">SmartFill</div><div class="brand-sub">AI 智能填表工作台</div></div>
+      </div>
+      <div>
+        <div class="nav-label">工作区</div>
+        <nav class="nav" aria-label="产品原型页面">
+          <button data-view="overview"><span class="nav-icon">概</span><span>任务概览</span></button>
+          <button data-view="setup"><span class="nav-icon">建</span><span>新建任务</span></button>
+          <button data-view="mapping"><span class="nav-icon">映</span><span>字段映射</span></button>
+          <button data-view="runtime"><span class="nav-icon">行</span><span>执行监控</span></button>
+          <button data-view="exceptions"><span class="nav-icon">异</span><span>异常队列</span></button>
+          <button data-view="report"><span class="nav-icon">报</span><span>完成报告</span></button>
+        </nav>
+      </div>
+      <div class="sidebar-foot"><strong>安全模式已开启</strong><p>当前仅允许访问已批准域名，敏感字段将在本地安全注入。</p></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="breadcrumb">运营中心 / <span id="crumb">任务概览</span></div>
+        <div class="top-actions"><span class="env">试点环境</span><span class="avatar">管</span></div>
+      </header>
+      <div class="content">
+        <section class="view" id="overview">
+          <div class="page-head"><div><h1>任务概览</h1><p>查看批量填写任务的运行状态与需要处理的异常。</p></div><button class="btn btn-primary jump" data-target="setup">＋ 新建填写任务</button></div>
+          <div class="grid-4">
+            <div class="card metric"><div class="metric-label">今日处理记录 <span>↗</span></div><div class="metric-value">1,284</div><div class="metric-foot"><strong>+12.6%</strong> 较昨日</div></div>
+            <div class="card metric"><div class="metric-label">填写成功率 <span>✓</span></div><div class="metric-value">96.8%</div><div class="metric-foot">目标阈值 95%</div></div>
+            <div class="card metric"><div class="metric-label">运行中任务 <span>●</span></div><div class="metric-value">3</div><div class="metric-foot">共占用 5 个浏览器</div></div>
+            <div class="card metric"><div class="metric-label">待处理异常 <span>!</span></div><div class="metric-value">7</div><div class="metric-foot"><strong>2 条</strong> 涉及敏感字段</div></div>
+          </div>
+          <div class="section">
+            <div class="section-title"><h2>最近任务</h2><a>查看全部</a></div>
+            <div class="card"><table><thead><tr><th>任务</th><th>目标网站</th><th>进度</th><th>状态</th><th>发起人</th><th>更新时间</th></tr></thead><tbody>
+              <tr><td><strong>8 月新用户资料补全</strong><br><span style="color:var(--muted)">SF-20260831-014</span></td><td>用户中心</td><td><div style="display:flex;align-items:center;gap:9px"><div class="progress" style="width:100px"><span style="width:72%"></span></div>72%</div></td><td><span class="status running">运行中</span></td><td>王敏</td><td>2 分钟前</td></tr>
+              <tr><td><strong>合作方实名资料录入</strong><br><span style="color:var(--muted)">SF-20260831-013</span></td><td>合作方平台</td><td>200 / 200</td><td><span class="status success">已完成</span></td><td>陈宇</td><td>38 分钟前</td></tr>
+              <tr><td><strong>会员联系方式更新</strong><br><span style="color:var(--muted)">SF-20260831-012</span></td><td>会员后台</td><td>47 / 120</td><td><span class="status warning">等待处理</span></td><td>李璇</td><td>1 小时前</td></tr>
+              <tr><td><strong>测试网站回归批次</strong><br><span style="color:var(--muted)">SF-20260830-021</span></td><td>内部测试站</td><td>50 / 50</td><td><span class="status failed">部分失败</span></td><td>系统</td><td>昨天</td></tr>
+            </tbody></table></div>
+          </div>
+          <div class="section grid-2">
+            <div class="card quick-card"><div><h3>开始一次安全试运行</h3><p>先用一条测试数据验证字段映射，不会自动提交。</p></div><button class="btn jump" data-target="setup">创建试运行</button></div>
+            <div class="card quick-card"><div><h3>7 条异常等待处理</h3><p>包括 2 条字段歧义、3 条验证码和 2 条登录失败。</p></div><button class="btn jump" data-target="exceptions">处理异常</button></div>
+          </div>
+        </section>
+
+        <section class="view" id="setup">
+          <div class="page-head"><div><h1>新建填写任务</h1><p>选择目标网站和数据文件，首次运行将先进行页面识别。</p></div><button class="btn jump" data-target="overview">取消</button></div>
+          <div class="steps"><div class="step active"><span class="step-no">1</span><span>基本信息</span></div><div class="step"><span class="step-no">2</span><span>导入数据</span></div><div class="step"><span class="step-no">3</span><span>字段映射</span></div><div class="step"><span class="step-no">4</span><span>试运行</span></div></div>
+          <div class="card form-card">
+            <h2>任务基本信息</h2>
+            <div class="form-grid">
+              <div class="field"><label>任务名称</label><input value="8 月新用户资料补全"></div>
+              <div class="field"><label>目标网站</label><select><option>用户中心（已授权）</option></select><small>仅可选择管理员批准的网站。</small></div>
+              <div class="field"><label>工作流模板</label><select><option>登录 → 个人简介 → 填写资料</option></select></div>
+              <div class="field"><label>提交策略</label><select><option>填写完成后人工确认</option></select><small>敏感字段始终在提交前复核。</small></div>
+            </div>
+            <h2 style="margin-top:26px">导入数据</h2>
+            <div class="upload"><strong>拖入 Excel / CSV，或点击选择文件</strong><span>支持 .xlsx、.csv，单批建议不超过 5,000 条记录</span><div style="margin-top:13px"><button class="btn btn-sm">选择文件</button></div></div>
+            <div class="grid-2" style="margin-top:18px">
+              <div class="field"><label>并发浏览器数</label><select><option>2（推荐）</option></select></div>
+              <div class="field"><label>单条失败后</label><select><option>记录异常并继续下一条</option></select></div>
+            </div>
+            <div class="form-actions"><button class="btn">保存草稿</button><button class="btn btn-primary jump" data-target="mapping">继续：识别字段</button></div>
+          </div>
+        </section>
+
+        <section class="view" id="mapping">
+          <div class="page-head"><div><h1>确认字段映射</h1><p>AI 已识别 8 个页面字段，其中 1 个敏感字段需要确认。</p></div><div style="display:flex;gap:9px"><button class="btn">重新识别</button><button class="btn btn-primary jump" data-target="runtime">开始试运行</button></div></div>
+          <div class="mapping-layout">
+            <div class="card browser">
+              <div class="browser-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><div class="address">https://member.example.com/profile</div></div>
+              <div class="browser-page"><div class="demo-header"><span class="demo-logo">会员服务中心</span><span class="demo-profile">张三　退出</span></div><div class="demo-form"><h3>个人资料</h3><p>请完善以下真实信息</p>
+                <div class="demo-row"><label>真实姓名</label><div class="demo-input">张三</div></div>
+                <div class="demo-row"><label>性别</label><div class="demo-input">男　⌄</div></div>
+                <div class="demo-row"><label>证件类型</label><div class="demo-input">居民身份证　⌄</div></div>
+                <div class="demo-row detected"><label>证件号码</label><div class="demo-input">请输入证件号码</div><span class="marker">待确认</span></div>
+                <div class="demo-row"><label>手机号码</label><div class="demo-input">138••••8000</div></div>
+                <div class="demo-row"><label>电子邮箱</label><div class="demo-input">zhangsan@example.com</div></div>
+                <span class="demo-submit">保存资料</span>
+              </div></div>
+            </div>
+            <div class="card mapping-panel"><h2>映射结果</h2><p>统一字段 → 当前页面字段</p>
+              <div class="mapping-item"><div class="mapping-top"><strong>person.fullName</strong><span class="confidence">99%</span></div><div class="mapping-target"><span>真实姓名</span><span>textbox</span></div><div class="evidence">关联 label“真实姓名”，字段类型与姓名校验器一致</div></div>
+              <div class="mapping-item"><div class="mapping-top"><strong>person.gender</strong><span class="confidence">98%</span></div><div class="mapping-target"><span>性别</span><span>combobox</span></div><div class="evidence">可选项包含“男/女”，与标准枚举一致</div></div>
+              <div class="mapping-item"><div class="mapping-top"><strong>person.idNumber</strong><span class="confidence" style="color:var(--amber)">86%</span></div><div class="mapping-target"><span>证件号码</span><span>textbox</span></div><div class="evidence">标签为“证件号码”，上方证件类型为“居民身份证”</div></div>
+              <div class="mapping-item"><div class="mapping-top"><strong>person.phone</strong><span class="confidence">99%</span></div><div class="mapping-target"><span>手机号码</span><span>textbox</span></div><div class="evidence">手机号格式和字段标签匹配</div></div>
+              <div class="sensitive-note">证件号码属于敏感字段。真实值不会发送给视觉模型，提交前需要人工复核。</div>
+              <div class="form-actions" style="margin-top:14px"><button class="btn">修改映射</button><button class="btn btn-primary jump" data-target="runtime">确认并试运行</button></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="runtime">
+          <div class="page-head"><div><h1>执行监控</h1><p>任务 SF-20260831-014 · 8 月新用户资料补全</p></div><div style="display:flex;gap:9px"><button class="btn">暂停任务</button><button class="btn btn-danger">终止任务</button></div></div>
+          <div class="runtime-grid">
+            <div class="card browser runtime-browser"><div class="browser-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><div class="address">浏览器 02 · https://member.example.com/profile</div></div><div class="browser-page">
+              <div class="runtime-demo"><div style="font-size:13px;font-weight:700;margin-bottom:14px">个人资料</div><div class="runtime-fill"></div><div class="runtime-fill"></div><div class="runtime-fill"></div><div class="runtime-popup"><strong>检测到活动弹窗</strong><p>识别为非必要营销活动，准备点击“暂不参与”。关闭后将重新扫描页面。</p><button class="btn btn-sm">查看判断依据</button></div></div>
+            </div></div>
+            <aside class="runtime-side">
+              <div class="card runtime-card"><h3>批次进度</h3><div class="progress"><span style="width:72%"></span></div><div class="mini-stat"><span>已处理</span><strong>864 / 1,200</strong></div><div class="mini-stat"><span>成功</span><strong style="color:var(--brand)">842</strong></div><div class="mini-stat"><span>待处理异常</span><strong style="color:var(--amber)">7</strong></div></div>
+              <div class="card runtime-card"><h3>当前记录</h3><div class="runtime-current"><strong>USER-00865 · 李明</strong><span>步骤 4/6：处理页面中断</span></div><div class="mini-stat"><span>浏览器</span><strong>Browser-02</strong></div><div class="mini-stat"><span>已耗时</span><strong>00:18</strong></div><div class="controls"><button class="btn btn-sm btn-primary">人工接管</button><button class="btn btn-sm">跳过此条</button></div></div>
+              <div class="card runtime-card"><h3>最近动作</h3><div class="log"><div class="log-item latest"><time>14:32:18</time><span class="log-point"></span><div>检测到活动弹窗，准备安全关闭</div></div><div class="log-item"><time>14:32:16</time><span class="log-point"></span><div>已填写并验证手机号码</div></div><div class="log-item"><time>14:32:13</time><span class="log-point"></span><div>已确认身份证字段映射</div></div><div class="log-item"><time>14:32:08</time><span class="log-point"></span><div>进入个人资料页面</div></div></div></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="exceptions">
+          <div class="page-head"><div><h1>异常队列</h1><p>集中处理需要人工判断、验证码或业务数据修正的记录。</p></div><button class="btn">批量导出异常</button></div>
+          <div class="exception-layout">
+            <div class="card exception-list">
+              <div class="exception-row selected"><span class="exception-icon">?</span><div><strong>USER-0037 · 字段含义不明确</strong><span>“身份证号码”和“税务证件号码”存在歧义</span></div><time>2 分钟前</time></div>
+              <div class="exception-row"><span class="exception-icon" style="color:var(--blue)">码</span><div><strong>USER-0041 · 需要短信验证码</strong><span>登录页等待用户输入一次性验证码</span></div><time>5 分钟前</time></div>
+              <div class="exception-row"><span class="exception-icon" style="color:var(--red)">!</span><div><strong>USER-0044 · 登录失败</strong><span>用户名或密码错误，不再自动重试</span></div><time>7 分钟前</time></div>
+              <div class="exception-row"><span class="exception-icon">?</span><div><strong>USER-0052 · 页面结构发生变化</strong><span>保存按钮未找到，需要重新识别</span></div><time>11 分钟前</time></div>
+              <div class="exception-row"><span class="exception-icon" style="color:var(--blue)">码</span><div><strong>USER-0060 · 图形验证码</strong><span>已暂停浏览器并等待人工接管</span></div><time>14 分钟前</time></div>
+            </div>
+            <div class="card exception-detail"><h2>确认身份证字段</h2><p>模型置信度 76%，两个候选控件均为可编辑文本框。</p><div class="screen-crop"><div class="crop-field">身份证号码　　请输入 18 位身份证号码</div><div class="crop-field">税务证件号码　请输入纳税人识别号</div></div><div class="candidate"><div class="candidate-head"><span>AI 建议：身份证号码</span><span style="color:var(--amber)">76%</span></div><p>数据字段为 `person.idNumber`；候选一包含“身份证”并具有 18 位长度提示。候选二位于“税务信息”分组。</p></div><div class="sensitive-note">确认后只会保存字段映射，不会保存当前用户的身份证明文。</div><div class="detail-actions"><button class="btn btn-primary">确认 AI 建议</button><button class="btn">在页面中选择</button><button class="btn">跳过此字段</button></div><div style="margin-top:12px"><label style="font-size:11px"><input type="checkbox"> 保存为该网站的默认规则</label></div></div>
+          </div>
+        </section>
+
+        <section class="view" id="report">
+          <div class="page-head"><div><h1>完成报告</h1><p>任务 SF-20260831-013 · 合作方实名资料录入</p></div><div style="display:flex;gap:9px"><button class="btn">重试失败项</button><button class="btn btn-primary">导出 Excel</button></div></div>
+          <div class="card report-hero"><div class="report-score"><div class="score-ring"><strong>94%</strong></div><div><h2>批次已完成</h2><p>200 条记录已处理，188 条成功，8 条待确认，4 条失败。</p></div></div><div class="bars"><div class="bar-row"><span>成功</span><div class="bar"><span class="b1"></span></div><strong>188</strong></div><div class="bar-row"><span>待确认</span><div class="bar"><span class="b2"></span></div><strong>8</strong></div><div class="bar-row"><span>失败</span><div class="bar"><span class="b3"></span></div><strong>4</strong></div></div></div>
+          <div class="grid-4 section"><div class="card metric"><div class="metric-label">总耗时</div><div class="metric-value" style="font-size:22px">01:24:36</div><div class="metric-foot">平均 25.4 秒/条</div></div><div class="card metric"><div class="metric-label">人工接管</div><div class="metric-value" style="font-size:22px">11</div><div class="metric-foot">占总记录 5.5%</div></div><div class="card metric"><div class="metric-label">视觉调用</div><div class="metric-value" style="font-size:22px">72</div><div class="metric-foot">DOM 直接命中 64%</div></div><div class="card metric"><div class="metric-label">重复提交</div><div class="metric-value" style="font-size:22px">0</div><div class="metric-foot">幂等校验正常</div></div></div>
+          <div class="section"><div class="section-title"><h2>记录明细</h2><a>筛选记录</a></div><div class="card"><table><thead><tr><th>记录</th><th>登录</th><th>资料填写</th><th>提交</th><th>状态</th><th>处理建议</th></tr></thead><tbody>
+            <tr><td>USER-0197 · 刘倩</td><td>成功</td><td>6 / 6</td><td>已提交</td><td><span class="status success">成功</span></td><td>—</td></tr>
+            <tr><td>USER-0198 · 赵强</td><td>成功</td><td>6 / 6</td><td>待确认</td><td><span class="status warning">待确认</span></td><td>复核身份证字段</td></tr>
+            <tr><td>USER-0199 · 周婷</td><td>失败</td><td>0 / 6</td><td>未提交</td><td><span class="status failed">失败</span></td><td>更新登录凭据</td></tr>
+            <tr><td>USER-0200 · 孙磊</td><td>成功</td><td>6 / 6</td><td>已提交</td><td><span class="status success">成功</span></td><td>—</td></tr>
+          </tbody></table></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script>
+    const names = { overview: '任务概览', setup: '新建任务', mapping: '字段映射', runtime: '执行监控', exceptions: '异常队列', report: '完成报告' };
+    function showView(view) {
+      if (!names[view]) view = 'overview';
+      document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === view));
+      document.querySelectorAll('.nav button').forEach(el => el.classList.toggle('active', el.dataset.view === view));
+      document.getElementById('crumb').textContent = names[view];
+      const url = new URL(window.location.href);
+      url.searchParams.set('view', view);
+      history.replaceState({}, '', url);
+    }
+    document.querySelectorAll('.nav button').forEach(btn => btn.addEventListener('click', () => showView(btn.dataset.view)));
+    document.querySelectorAll('.jump').forEach(btn => btn.addEventListener('click', () => showView(btn.dataset.target)));
+    showView(new URLSearchParams(window.location.search).get('view') || 'overview');
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    image: smartfill-api:0.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      SMARTFILL_ENVIRONMENT: development
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+

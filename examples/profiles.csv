@@ -1,0 +1,3 @@
+username,password,full_name,gender,id_number,phone,email
+demo-user,REPLACE_WITH_TEST_SECRET,演示用户,男,110101199001011234,13800138000,demo@example.com
+
