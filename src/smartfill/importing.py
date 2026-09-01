@@ -73,6 +73,9 @@ class ProfileImporter:
         mapping: dict[str, str],
         *,
         preview_rows: int = 20,
+        allowed_fields: set[str] | frozenset[str] | None = None,
+        required_fields: set[str] | frozenset[str] | None = None,
+        sensitive_fields: set[str] | frozenset[str] | None = None,
     ) -> ImportPreview:
         extension = Path(filename).suffix.lower()
         if extension not in {".csv", ".xlsx"}:
@@ -86,7 +89,13 @@ class ProfileImporter:
         if not rows:
             raise ImportValidationError("The uploaded file has no data rows")
         headers = list(rows[0])
-        self._validate_mapping(mapping, headers)
+        self._validate_mapping(
+            mapping,
+            headers,
+            allowed_fields=allowed_fields,
+            required_fields=required_fields,
+        )
+        protected_fields = SECRET_FIELDS | frozenset(sensitive_fields or ())
 
         records: list[ProfileRecord] = []
         sanitized_rows: list[dict[str, str]] = []
@@ -104,7 +113,7 @@ class ProfileImporter:
                 if not raw_value:
                     continue
                 normalized = self._normalize(canonical, raw_value, row_number)
-                if canonical in SECRET_FIELDS:
+                if canonical in protected_fields:
                     secret_refs[canonical] = self._secret_store.put(
                         f"{record_id}/{canonical}", normalized
                     )
@@ -140,14 +149,24 @@ class ProfileImporter:
         return value
 
     @staticmethod
-    def _validate_mapping(mapping: dict[str, str], headers: list[str]) -> None:
+    def _validate_mapping(
+        mapping: dict[str, str],
+        headers: list[str],
+        *,
+        allowed_fields: set[str] | frozenset[str] | None = None,
+        required_fields: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        approved = CANONICAL_FIELDS if allowed_fields is None else frozenset(allowed_fields)
         for source, canonical in mapping.items():
             if source not in headers:
                 raise ImportValidationError(f"Source column does not exist: {source}")
-            if canonical not in CANONICAL_FIELDS:
+            if canonical not in approved:
                 raise ImportValidationError(f"Unsupported canonical field: {canonical}")
         if len(set(mapping.values())) != len(mapping):
             raise ImportValidationError("A canonical field can only be mapped once")
+        missing = frozenset(required_fields or ()) - set(mapping.values())
+        if missing:
+            raise ImportValidationError(f"Missing field mappings: {sorted(missing)}")
 
     @staticmethod
     def _read_csv(content: bytes) -> list[dict[str, str]]:

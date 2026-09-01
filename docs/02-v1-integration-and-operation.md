@@ -1,6 +1,8 @@
 # SmartFill 第一版对接与操作文档
 
-本文同时面向实施人员和业务操作员。当前仓库尚未包含可执行程序，本文件定义第一版需要实现的接口、配置和标准操作流程，后续实现必须与本文保持一致。
+本文同时面向实施人员和业务操作员。当前仓库已经包含可运行的第一版 DOM-first
+纵向链路；本文件定义完整第一版的接口、配置和标准操作流程。实际完成度见
+[系统架构与实现进度](06-system-architecture-and-progress.md)。
 
 ## 1. 第一版组成
 
@@ -21,7 +23,7 @@ flowchart LR
 - Web：React + TypeScript + Vite。
 - API：Python 3.12 + FastAPI + Pydantic。
 - 队列：Celery/RQ + Redis。
-- 数据库：PostgreSQL 16。
+- 数据库：MySQL 8 + SQLAlchemy 2 + Alembic。
 - 浏览器：Chromium + CDP；执行器适配 Stagehand 或 Playwright。
 - 默认视觉 API：阿里云百炼 `qwen3-vl-flash`、`qwen3-vl-plus`。
 - 文件与截图：开发环境本地目录，生产环境 MinIO/OSS。
@@ -177,6 +179,43 @@ class VisionDecision(BaseModel):
 
 ## 4. 数据文件规范
 
+### 4.1 动态字段 Schema
+
+Browser Job 可以随任务提交 `field_definitions`，不再局限于系统内置人物字段：
+
+```json
+{
+  "fields": {
+    "person.firstName": "San",
+    "account.password": "secret-value"
+  },
+  "field_definitions": [
+    {
+      "key": "person.firstName",
+      "display_name": "名",
+      "aliases": ["First Name", "Given Name", "名"],
+      "input_kind": "text",
+      "sensitive": false,
+      "source_field": null,
+      "autocomplete_hints": ["given-name"]
+    },
+    {
+      "key": "account.passwordConfirmation",
+      "display_name": "确认密码",
+      "aliases": ["Confirm", "Confirm Password"],
+      "input_kind": "password",
+      "sensitive": true,
+      "source_field": "account.password",
+      "autocomplete_hints": ["new-password"]
+    }
+  ]
+}
+```
+
+字段标识和语义词均经过长度、格式、控制字符和数量校验。定义必须覆盖提交值；派生字段必须
+引用当前 Schema 中的字段，禁止循环引用；从敏感字段派生的字段也必须标记为敏感。
+Schema 只描述语义，不接受 CSS、XPath 或 JavaScript。
+
 第一版推荐模板列：
 
 | 列名 | 必填 | 说明 |
@@ -196,16 +235,37 @@ class VisionDecision(BaseModel):
 
 ## 5. 业务操作流程
 
+### 5.0 运行时白名单
+
+进入 Web 左侧“系统设置”，在“目标网页白名单”中每行配置一个 Origin，例如
+`https://example.com`。保存后写入 MySQL `system_settings` 并立即生效；页面扫描、步骤导航、
+iframe/资源路由和跳转后的 Origin 校验都会读取最新配置，无需修改 `.env` 或重启服务。
+
+非回环地址只允许 HTTPS。本机联调可以使用 `http://127.0.0.1:端口` 或
+`http://localhost:端口`。
+
 ### 5.1 创建任务
 
 1. 登录 SmartFill 操作台。
 2. 点击“新建填写任务”。
 3. 选择已有网站模板，或输入经过管理员批准的目标网站。
 4. 上传 CSV/XLSX，并确认列映射。
-5. 选择“只填写不提交”或“提交前人工确认”。
+5. 选择“仅填写”“确认后提交”或“自动提交”，并配置提交按钮语义别名。
 6. 配置并发数、失败后是否继续和弹窗策略。
 
 ### 5.2 首次识别与试运行
+
+当配置的 URL 是官网首页而不是表单页时：
+
+1. 将入口模式设为 `click`，并配置 `登录`、`Login`、`Sign in` 等可访问名称别名。
+2. Worker 只从当前 Accessibility/DOM 快照中的链接、按钮和 `role=button` 元素选择入口。
+3. 唯一高置信候选可直接点击；多候选时正式任务进入人工确认。
+4. 跳转后重新采集完整页面结构，再执行字段发现和字段映射，不能沿用首页元素快照。
+5. 跨 Origin 登录页必须预先加入白名单；未批准跳转会被网络路由层阻止。
+
+Web 的“扫描页面字段”使用同一条受约束链路，返回 `FieldDefinition[]`。内置语义可识别用户名、
+密码、姓名、电话、邮箱等字段；其他可填写控件以 `custom.fieldN` 返回，供操作员修改名称、
+别名和敏感标记。扫描结果不包含页面字段值，更不会读取浏览器密码管理器中的凭据。
 
 1. 启动一个独立浏览器窗口。
 2. SmartFill 识别登录页和字段。
@@ -216,12 +276,32 @@ class VisionDecision(BaseModel):
 7. 系统填写但不提交，逐字段显示验证结果。
 8. 操作员确认后保存模板并启动批次。
 
+### 5.2.1 登录后填写资料的顺序工作流
+
+1. 配置第一个“登录”步骤：登录页或官网入口 URL、账号密码字段、入口策略和登录提交策略。
+2. 点击“保存当前步骤并添加下一步”。
+3. 配置第二个“完善资料”步骤：资料页 URL、动态字段 Schema 和资料提交策略。
+4. 启动任务后，Worker 在同一个隔离 Browser Context 中依次执行，步骤间保留 Cookie、
+   Session Storage 和登录态。
+5. 任一步骤出现字段歧义、验证码/MFA 或提交歧义时，整个工作流暂停并保留原会话；人工确认后
+   从当前步骤继续。
+6. 任务列表展示当前步骤、总步骤数、字段进度和状态；任务详情展示不含字段值的配置快照及
+   MySQL 中的追加式执行时间线。
+
+第一版工作流支持 1～10 个顺序“表单步骤”。条件分支、循环、任意点击/等待/断言动作属于
+后续通用工作流 DSL，不在本版范围内。
+
 ### 5.3 批量运行
 
-- 操作台显示批次进度、当前记录、当前动作和浏览器实时画面。
-- 操作员可暂停、继续、跳过当前记录或接管浏览器。
-- 接管时自动化立即停止；操作员点击“交还控制”后重新扫描页面。
-- 遇到验证码、MFA、跨域跳转或低置信度字段时进入异常队列。
+1. 先在执行控制台成功运行一次单步或多步骤任务，形成可复用的脱敏工作流快照。
+2. 打开“用户导入”，选择已有工作流并上传 UTF-8 CSV 或 XLSX。
+3. 操作台读取表头后，为工作流每个非派生输入字段选择一个数据列。
+4. 点击“开始批量执行”；后端创建批次业务任务，并按数据行串行创建 Browser Job。
+5. 页面轮询展示批次总数、完成数和失败数；MySQL 保存批次及每行对应的 Browser Job ID。
+
+v1 不把导入字段值写入批次表；敏感字段转为内存 SecretStore 引用后才进入 Worker。遇到验证码、
+MFA、提交歧义或字段歧义时，批次转为“需要人工处理”并停止调度后续行。批次级继续、跳过、
+失败重试和服务重启后的断点续跑属于下一阶段。
 
 ### 5.4 异常处理
 
@@ -234,6 +314,11 @@ class VisionDecision(BaseModel):
 | 网站改版 | 重新运行字段识别，确认并生成新模板版本 |
 | 不明弹窗 | 查看截图和风险说明，选择关闭、继续或终止 |
 
+人工确认时 Worker 会保留当前 Chromium Context，不重新登录或刷新页面。字段歧义只允许
+从当前 Accessibility/DOM 快照返回的临时 element id 中选择，不能提交 CSS、XPath 或
+脚本。验证码/MFA 必须在可见 Chromium 或可信 CDP 浏览器中由操作员完成；完成后点击
+“确认并重新扫描”。若不再继续，点击“终止任务”释放浏览器会话。
+
 ### 5.5 完成与导出
 
 任务完成后检查：
@@ -244,6 +329,19 @@ class VisionDecision(BaseModel):
 - 模型调用次数、人工接管次数和总耗时。
 
 报告可导出 CSV/XLSX；审计截图只对授权角色开放。
+
+### 5.6 提交动作策略（v1 已启用）
+
+登录、注册、保存等按钮不作为普通填值动作直接点击，而是进入独立提交状态机：
+
+1. `fill_only` 为默认值，只填写和回读，不点击按钮。
+2. `confirm_before_submit` 从最新 DOM/Accessibility 观测中生成 `button`/`submit` 候选，
+   操作员只能批准临时 element id，不能提交 CSS、XPath 或脚本。
+3. `auto_submit` 只在按钮别名得到唯一高置信匹配时点击；缺失或歧义时自动转人工确认。
+4. 三种策略都要求所有字段先通过回读验证，并再次检查按钮可见、启用且 Origin 仍在白名单。
+5. 每个 Browser Job 最多尝试一次提交；点击失败不会盲目自动重试，避免重复注册或重复保存。
+6. 当前 v1 的 `submitted=true` 表示浏览器已执行点击，不等价于业务成功。下一版应配置成功
+   URL/成功文案/响应条件，形成业务结果验证和幂等键审计。
 
 ## 6. 验收测试清单
 
@@ -274,4 +372,3 @@ class VisionDecision(BaseModel):
 ### 为什么默认不自动提交？
 
 在字段映射和异常恢复尚未经过足够业务样本验证前，自动提交会放大误填风险。模板稳定后可由管理员按网站逐步开启。
-

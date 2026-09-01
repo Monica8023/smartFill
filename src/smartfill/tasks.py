@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from threading import RLock
+from typing import Protocol
 
 from smartfill.domain import Task, TaskStatus
 
 
 class TaskNotFoundError(LookupError):
     """Raised when a task ID does not exist."""
+
+
+class TaskRepository(Protocol):
+    def save(self, task: Task) -> Task: ...
+
+    def get(self, task_id: str) -> Task: ...
+
+    def list(self) -> list[Task]: ...
 
 
 class InMemoryTaskRepository:
@@ -36,7 +45,7 @@ class InMemoryTaskRepository:
 
 
 class TaskService:
-    def __init__(self, repository: InMemoryTaskRepository) -> None:
+    def __init__(self, repository: TaskRepository) -> None:
         self._repository = repository
 
     def create(self, *, name: str, target_origin: str, record_count: int) -> Task:
@@ -62,6 +71,12 @@ class TaskService:
 
     def resume(self, task_id: str) -> Task:
         return self._transition(task_id, TaskStatus.RUNNING)
+
+    def complete(self, task_id: str) -> Task:
+        return self._transition(task_id, TaskStatus.COMPLETED)
+
+    def fail(self, task_id: str) -> Task:
+        return self._transition(task_id, TaskStatus.FAILED)
 
     def _transition(self, task_id: str, target: TaskStatus) -> Task:
         return self._repository.save(self.get(task_id).transitioned(target))

@@ -9,6 +9,8 @@ RUN pip install uv==0.11.14
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY alembic.ini ./
+COPY migrations ./migrations
 RUN uv sync --frozen --no-dev --no-editable
 
 
@@ -23,6 +25,8 @@ RUN groupadd --system --gid 10001 smartfill \
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /build/alembic.ini /app/alembic.ini
+COPY --from=builder /build/migrations /app/migrations
 
 USER smartfill:smartfill
 EXPOSE 8000

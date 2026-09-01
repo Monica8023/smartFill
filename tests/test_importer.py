@@ -85,3 +85,29 @@ def test_preview_masks_known_sensitive_columns_even_when_unmapped() -> None:
 
     assert preview.rows[0]["password"] == "********"
     assert preview.rows[0]["id_number"] == "110************234"
+
+
+def test_import_accepts_workflow_scoped_custom_fields() -> None:
+    importer = ProfileImporter(InMemorySecretStore())
+
+    preview = importer.preview(
+        "people.csv",
+        b"employee_code\nSF-001\n",
+        {"employee_code": "profile.employeeCode"},
+        allowed_fields={"profile.employeeCode"},
+    )
+
+    assert preview.records[0].values == {"profile.employeeCode": "SF-001"}
+
+
+def test_import_requires_every_workflow_field_mapping() -> None:
+    importer = ProfileImporter(InMemorySecretStore())
+
+    with pytest.raises(ImportValidationError, match="Missing field mappings"):
+        importer.preview(
+            "people.csv",
+            b"username\nalice\n",
+            {"username": "account.username"},
+            allowed_fields={"account.username", "account.password"},
+            required_fields={"account.username", "account.password"},
+        )
