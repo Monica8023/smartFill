@@ -74,7 +74,7 @@ export interface HumanResolution {
   entry_element_id?: string | null
 }
 
-export type EntryActionMode = 'direct' | 'click'
+export type EntryActionMode = 'auto' | 'direct' | 'click'
 
 export interface EntryActionConfig {
   mode: EntryActionMode
@@ -138,6 +138,7 @@ export interface BrowserJob {
       name: string
       target_url: string
       field_names: string[]
+      field_values?: Record<string, string>
       field_definitions: FieldDefinition[]
       entry_action: EntryActionConfig
       submission: SubmissionConfig
@@ -145,6 +146,8 @@ export interface BrowserJob {
   }
   screenshot_url: string | null
   intervention?: HumanIntervention | null
+  diagnostic_id?: string | null
+  diagnostic_url?: string | null
   events: JobEvent[]
   created_at: string
   updated_at: string

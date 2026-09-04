@@ -24,6 +24,9 @@ from playwright.async_api import (
     async_playwright,
 )
 from playwright.async_api import (
+    Error as PlaywrightError,
+)
+from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,6 +70,7 @@ class DomElement(BaseModel):
     autocomplete: str = ""
     role: str = ""
     accessible_name: str = ""
+    form_context: str = ""
     frame_path: str = "main"
     frame_url: str = ""
     tree_scope: str = "document"
@@ -144,6 +148,42 @@ def _normalize(value: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", normalized)
 
 
+def _tokens(value: str) -> list[str]:
+    expanded = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    normalized = unicodedata.normalize("NFKC", expanded).casefold()
+    return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", normalized)
+
+
+def _term_is_within(alias: str, value: str) -> bool:
+    normalized_alias = _normalize(alias)
+    normalized_value = _normalize(value)
+    if not normalized_alias or not normalized_value:
+        return False
+    if normalized_alias == normalized_value:
+        return True
+    if re.search(r"[a-zA-Z]", alias):
+        alias_tokens = _tokens(alias)
+        value_tokens = _tokens(value)
+        width = len(alias_tokens)
+        return any(
+            value_tokens[index : index + width] == alias_tokens
+            for index in range(len(value_tokens) - width + 1)
+        )
+    return normalized_alias in normalized_value
+
+
+def _form_kind(context: str) -> str:
+    normalized = " ".join(_tokens(context))
+    compact = _normalize(context)
+    registration_terms = ("register", "registration", "sign up", "create account")
+    login_terms = ("login", "log in", "sign in")
+    if any(term in normalized for term in registration_terms) or "注册" in compact:
+        return "registration"
+    if any(term in normalized for term in login_terms) or "登录" in compact or "登陆" in compact:
+        return "login"
+    return "unknown"
+
+
 class SemanticFieldMapper:
     """Map canonical fields using portable user-facing and HTML semantics."""
 
@@ -190,28 +230,64 @@ class SemanticFieldMapper:
 
     @staticmethod
     def _score(definition: FieldDefinition, element: DomElement) -> tuple[float, str]:
-        autocomplete = _normalize(element.autocomplete)
-        autocomplete_hints = {_normalize(value) for value in definition.autocomplete_hints}
-        if autocomplete and autocomplete in autocomplete_hints:
-            return 0.99, f"autocomplete={element.autocomplete}"
-
-        semantic_parts = [
+        form_kind = _form_kind(element.form_context)
+        input_type = _normalize(element.input_type)
+        semantic_values = [
             element.label,
             element.aria_label,
             element.placeholder,
             element.name,
             element.role,
+            element.accessible_name,
         ]
-        normalized_parts = [_normalize(part) for part in semantic_parts if part]
-        semantic_text = _normalize(" ".join(semantic_parts))
+        is_confirmation = any(
+            _term_is_within(term, value)
+            for term in ("confirm", "confirmation", "确认", "再次")
+            for value in semantic_values
+            if value
+        )
+        is_login_identifier = input_type in {"email", "tel"} or any(
+            _term_is_within(term, value)
+            for term in ("email", "email address", "username", "user name", "账号", "账户")
+            for value in semantic_values
+            if value
+        )
+
+        if (
+            form_kind == "login"
+            and definition.key == "account.username"
+            and is_login_identifier
+        ):
+            return 0.99, f"{form_kind} form uses type={element.input_type} as login identifier"
+        if (
+            form_kind == "registration"
+            and definition.key == "account.email"
+            and input_type == "email"
+        ):
+            return 0.99, "registration form email"
+        if (
+            definition.key == "account.passwordConfirmation"
+            and input_type == "password"
+            and is_confirmation
+        ):
+            return 0.99, "password confirmation semantics"
+        if definition.key == "account.password" and is_confirmation:
+            return 0.0, "confirmation field is not the source password"
+
+        autocomplete = _normalize(element.autocomplete)
+        autocomplete_hints = {_normalize(value) for value in definition.autocomplete_hints}
+        if autocomplete and autocomplete in autocomplete_hints:
+            return 0.99, f"autocomplete={element.autocomplete}"
+
+        semantic_parts = [part for part in semantic_values if part]
+        normalized_parts = [_normalize(part) for part in semantic_parts]
         aliases = sorted(definition.semantic_aliases, key=len, reverse=True)
         for alias in aliases:
             normalized_alias = _normalize(alias)
             if normalized_alias and normalized_alias in normalized_parts:
                 return 0.97, f"semantic field equals {alias}"
-            if normalized_alias and normalized_alias in semantic_text:
+            if any(_term_is_within(alias, part) for part in semantic_parts):
                 return 0.92, f"semantic text contains {alias}"
-        input_type = _normalize(element.input_type)
         if definition.input_kind in {
             FieldInputKind.PASSWORD,
             FieldInputKind.EMAIL,
@@ -288,9 +364,22 @@ class PlaywrightPageObserver:
                   .map((element, index) => {
                     const elementId = `${observation.prefix}-${index}`
                     element.setAttribute('data-smartfill-id', elementId)
-                    const labels = element.labels
-                      ? Array.from(element.labels).map(label => label.innerText).join(' ')
-                      : ''
+                    const labelText = label => {
+                      const clone = label.cloneNode(true)
+                      clone.querySelectorAll('label, input, textarea, select, button')
+                        .forEach(child => child.remove())
+                      return (clone.textContent || '').trim()
+                    }
+                    const closestLabel = element.closest('label')
+                    const siblingLabel = element.parentElement
+                      ? element.parentElement.querySelector(':scope > label')
+                      : null
+                    const preferredLabel = closestLabel || siblingLabel
+                    const labels = preferredLabel
+                      ? labelText(preferredLabel)
+                      : (element.labels
+                        ? Array.from(element.labels).map(labelText).join(' ')
+                        : '')
                     const ariaLabel = element.getAttribute('aria-label') || ''
                     const placeholder = element.getAttribute('placeholder') || ''
                     const name = element.getAttribute('name') || ''
@@ -308,6 +397,23 @@ class PlaywrightPageObserver:
                           label: option.textContent || ''
                         }))
                       : []
+                    const form = element.form || element.closest('form')
+                    const region = form || element.closest(
+                      'main, [role=main], section, dialog, fieldset'
+                    ) || document.body
+                    const regionLabel = (
+                      region.getAttribute('aria-label')
+                      || region.querySelector('h1, h2, h3, legend')?.textContent
+                      || ''
+                    )
+                    const actionText = Array.from(region.querySelectorAll(
+                      'button, input[type=submit], input[type=button]'
+                    )).map(action => (
+                      action.getAttribute('aria-label')
+                      || action.innerText
+                      || action.value
+                      || ''
+                    )).join(' ')
                     return {
                       element_id: elementId,
                       tag,
@@ -319,6 +425,10 @@ class PlaywrightPageObserver:
                       autocomplete: element.getAttribute('autocomplete') || '',
                       role,
                       accessible_name: labels || ariaLabel || placeholder || name,
+                      form_context: (
+                        [regionLabel, actionText].filter(Boolean).join(' ')
+                        || document.title
+                      ).slice(0, 500),
                       frame_path: observation.framePath,
                       frame_url: observation.frameUrl,
                       tree_scope: element.getRootNode() instanceof ShadowRoot
@@ -471,6 +581,8 @@ class PlaywrightPageObserver:
 class PlaywrightBrowserWorker:
     """Run one semantic form-fill job in an isolated Chromium context."""
 
+    _MAX_ACTION_CANDIDATES = 20
+
     def __init__(
         self,
         *,
@@ -515,11 +627,24 @@ class PlaywrightBrowserWorker:
             )
             self._require_allowed_url(session.page.url)
             await self._dismiss_safe_popup(session.page)
-            if request.entry_action.mode is EntryActionMode.CLICK:
+            initial_observation: ObservedPage | None = None
+            should_enter = request.entry_action.mode is EntryActionMode.CLICK
+            if request.entry_action.mode is EntryActionMode.AUTO:
+                initial_observation = await self._observer.observe(
+                    session.page,
+                    scan_request.job_id,
+                )
+                should_enter = self._should_auto_enter(scan_request, initial_observation)
+            if should_enter:
+                aliases = (
+                    request.entry_action.aliases
+                    if request.entry_action.mode is EntryActionMode.CLICK
+                    else self._auto_entry_aliases(scan_request)
+                )
                 actions = await self._observer.observe_entry_actions(
                     session.page,
                     scan_request.job_id,
-                    request.entry_action.aliases,
+                    aliases,
                 )
                 matched = [
                     candidate
@@ -529,7 +654,7 @@ class PlaywrightBrowserWorker:
                 selected = self._unique_action_candidate(matched)
                 if selected is None:
                     raise ValueError(
-                        "Login entry could not be uniquely identified; refine its aliases"
+                        "Form entry could not be uniquely identified; refine its aliases"
                     )
                 session.entry_actions = actions
                 await self._click_entry_action(
@@ -538,10 +663,12 @@ class PlaywrightBrowserWorker:
                     report=None,
                 )
             await self._dismiss_safe_popup(session.page)
-            observed = await self._observer.observe(
-                session.page,
-                scan_request.job_id,
-            )
+            observed = initial_observation
+            if observed is None or session.entry_action_performed:
+                observed = await self._observer.observe(
+                    session.page,
+                    scan_request.job_id,
+                )
             return PageScanResult(
                 initial_url=self._safe_display_url(request.target_url),
                 final_url=self._safe_display_url(session.page.url),
@@ -712,31 +839,54 @@ class PlaywrightBrowserWorker:
         completed_fields = session.completed_fields
         screenshot_path: str | None = None
         if not session.navigated:
-            await report(
-                JobProgress(
-                    status=BrowserJobStatus.NAVIGATING,
-                    message="正在访问目标页面",
-                    current_url=request.target_url,
+            if self._same_page_url(page.url, request.target_url):
+                await report(
+                    JobProgress(
+                        status=BrowserJobStatus.OBSERVING,
+                        message="目标地址未变化, 复用当前页面会话",
+                        current_url=page.url,
+                    )
                 )
-            )
-            await page.goto(
-                request.target_url,
-                wait_until="domcontentloaded",
-                timeout=self._navigation_timeout_ms,
-            )
+            else:
+                await report(
+                    JobProgress(
+                        status=BrowserJobStatus.NAVIGATING,
+                        message="正在访问目标页面",
+                        current_url=request.target_url,
+                    )
+                )
+                await page.goto(
+                    request.target_url,
+                    wait_until="domcontentloaded",
+                    timeout=self._navigation_timeout_ms,
+                )
             self._require_allowed_url(page.url)
             session.navigated = True
 
+        should_enter = request.entry_action.mode is EntryActionMode.CLICK
         if (
-            request.entry_action.mode is EntryActionMode.CLICK
+            request.entry_action.mode in {EntryActionMode.AUTO, EntryActionMode.CLICK}
             and not session.entry_action_performed
         ):
+            session.observed = await self._observer.observe(page, request.job_id)
+            if self._requested_form_is_present(
+                session.observed,
+                request.fields,
+                request.field_definitions,
+            ):
+                should_enter = False
+                if request.entry_action.mode is EntryActionMode.CLICK:
+                    session.entry_action_performed = True
+            elif request.entry_action.mode is EntryActionMode.AUTO:
+                should_enter = self._should_auto_enter(request, session.observed)
+
+        if should_enter and not session.entry_action_performed:
             dismissed = await self._dismiss_safe_popup(page)
             if dismissed:
                 await report(
                     JobProgress(
                         status=BrowserJobStatus.OBSERVING,
-                        message="已关闭弹窗, 正在识别登录入口",
+                        message="已关闭弹窗, 正在识别表单入口",
                         current_url=page.url,
                     )
                 )
@@ -747,10 +897,15 @@ class PlaywrightBrowserWorker:
                     report=report,
                 )
             else:
+                aliases = (
+                    request.entry_action.aliases
+                    if request.entry_action.mode is EntryActionMode.CLICK
+                    else self._auto_entry_aliases(request)
+                )
                 actions = await self._observer.observe_entry_actions(
                     page,
                     request.job_id,
-                    request.entry_action.aliases,
+                    aliases,
                 )
                 session.entry_actions = actions
                 matched = [
@@ -766,18 +921,20 @@ class PlaywrightBrowserWorker:
                         report=report,
                     )
                 else:
-                    candidates = matched or actions.candidates
+                    candidates = (matched or actions.candidates)[
+                        : self._MAX_ACTION_CANDIDATES
+                    ]
                     screenshot_path = await self._capture(page, request.job_id)
                     return BrowserRunResult(
                         status=BrowserJobStatus.NEED_HUMAN,
-                        message="登录入口无法唯一识别, 需要人工确认",
+                        message="表单入口无法唯一识别, 需要人工确认",
                         current_url=page.url,
                         completed_fields=completed_fields,
                         screenshot_path=screenshot_path,
                         intervention=HumanIntervention(
                             kind=InterventionKind.ENTRY_ACTION_CONFIRMATION,
                             instruction=(
-                                "选择当前页面的登录入口; 系统只允许点击本次扫描候选"
+                                "选择当前页面的表单入口; 系统只允许点击本次扫描候选"
                             ),
                             entry_candidates=candidates,
                             requires_browser_interaction=not candidates,
@@ -809,7 +966,9 @@ class PlaywrightBrowserWorker:
                 ),
             )
 
-        dismissed = await self._dismiss_safe_popup(page)
+        dismissed = False
+        if not session.entry_action_performed:
+            dismissed = await self._dismiss_safe_popup(page)
         if dismissed:
             await report(
                 JobProgress(
@@ -1031,6 +1190,53 @@ class PlaywrightBrowserWorker:
             return candidates[0]
         return None
 
+    def _should_auto_enter(
+        self,
+        request: BrowserRunRequest,
+        observed: ObservedPage,
+    ) -> bool:
+        matches = self._mapper.map_fields(observed.elements, request.field_definitions)
+        requested = set(request.fields)
+        if any(match.canonical_field in requested for match in matches):
+            return False
+        for definition in request.field_definitions:
+            if definition.key not in requested:
+                continue
+            ranked = self._mapper.ranked_candidates(
+                observed.elements,
+                definition,
+                limit=1,
+            )
+            if ranked and ranked[0][0] >= 0.85:
+                return False
+        return True
+
+    @staticmethod
+    def _auto_entry_aliases(request: BrowserRunRequest) -> list[str]:
+        fields = set(request.fields)
+        registration = (
+            "account.passwordConfirmation" in fields
+            or "account.email" in fields
+            or (
+                "account.password" in fields
+                and "person.fullName" in fields
+                and "account.username" not in fields
+            )
+        )
+        if registration:
+            return [
+                "Create an account",
+                "Create account",
+                "Register",
+                "Sign up",
+                "注册",
+                "创建账户",
+                "创建账号",
+            ]
+        if "account.username" in fields or "account.password" in fields:
+            return ["Login", "Log in", "Sign in", "登录", "登陆"]
+        return []
+
     async def _click_entry_action(
         self,
         session: _BrowserSession,
@@ -1078,29 +1284,40 @@ class PlaywrightBrowserWorker:
         ]
         if opened_pages:
             session.page = opened_pages[-1]
-        with suppress(PlaywrightTimeoutError):
-            await session.page.wait_for_load_state(
-                "domcontentloaded",
-                timeout=min(self._action_timeout_ms, 3_000),
-            )
-        with suppress(PlaywrightTimeoutError):
-            await session.page.wait_for_function(
-                """
-                previousUrl => location.href !== previousUrl || Array.from(
-                  document.querySelectorAll(
-                    'input[type=password], input[autocomplete=username], input[autocomplete=email]'
-                  )
-                ).some(element => {
-                  const style = window.getComputedStyle(element)
-                  return style.visibility !== 'hidden' && style.display !== 'none'
-                })
-                """,
-                arg=previous_url,
-                timeout=min(self._action_timeout_ms, 3_000),
-            )
+        await self._wait_for_requested_form(session, previous_url)
         self._require_allowed_url(session.page.url)
         session.entry_action_performed = True
         session.observed = None
+
+    async def _wait_for_requested_form(
+        self,
+        session: _BrowserSession,
+        previous_url: str,
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + self._action_timeout_ms / 1_000
+        while asyncio.get_running_loop().time() < deadline:
+            if session.page.url != previous_url:
+                with suppress(PlaywrightTimeoutError):
+                    await session.page.wait_for_load_state(
+                        "domcontentloaded",
+                        timeout=self._action_timeout_ms,
+                    )
+                return
+            try:
+                observed = await self._observer.observe(
+                    session.page,
+                    session.request.job_id,
+                )
+                if self._requested_fields_are_present(
+                    observed,
+                    session.request.fields,
+                    session.request.field_definitions,
+                ):
+                    return
+            except PlaywrightError:
+                pass
+            await asyncio.sleep(0.1)
+        raise TimeoutError("点击表单入口后, 目标表单未在超时时间内出现")
 
     @staticmethod
     async def _action_accessible_name(locator: Locator) -> str:
@@ -1260,6 +1477,7 @@ class PlaywrightBrowserWorker:
             raise ValueError("Submission candidate meaning changed after observation")
 
         session.submission_attempted = True
+        previous_url = session.page.url
         await report(
             JobProgress(
                 status=BrowserJobStatus.SUBMITTING,
@@ -1269,11 +1487,15 @@ class PlaywrightBrowserWorker:
             )
         )
         await locator.click()
-        with suppress(PlaywrightTimeoutError):
-            await session.page.wait_for_load_state(
-                "domcontentloaded",
-                timeout=min(self._action_timeout_ms, 2_000),
-            )
+        next_step = self._next_workflow_step(session)
+        if next_step is None:
+            with suppress(PlaywrightTimeoutError):
+                await session.page.wait_for_load_state(
+                    "domcontentloaded",
+                    timeout=min(self._action_timeout_ms, 2_000),
+                )
+        else:
+            await self._wait_for_next_step(session, next_step, previous_url)
         self._require_allowed_url(session.page.url)
         screenshot_path = await self._capture(session.page, session.request.job_id)
         return BrowserRunResult(
@@ -1284,6 +1506,98 @@ class PlaywrightBrowserWorker:
             screenshot_path=screenshot_path,
             submitted=True,
         )
+
+    @staticmethod
+    def _next_workflow_step(session: _BrowserSession) -> WorkflowStep | None:
+        steps = session.workflow_steps
+        if steps is None or session.step_index >= len(steps) - 1:
+            return None
+        return steps[session.step_index + 1]
+
+    async def _wait_for_next_step(
+        self,
+        session: _BrowserSession,
+        next_step: WorkflowStep,
+        previous_url: str,
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + self._action_timeout_ms / 1_000
+        navigated_url: str | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            page = session.page
+            if page.url != previous_url and page.url != navigated_url:
+                with suppress(PlaywrightTimeoutError):
+                    await page.wait_for_load_state(
+                        "domcontentloaded",
+                        timeout=self._action_timeout_ms,
+                    )
+                self._require_allowed_url(page.url)
+                navigated_url = page.url
+            try:
+                observed = await self._observer.observe(page, session.request.job_id)
+                if self._requested_form_is_present(
+                    observed,
+                    next_step.fields,
+                    next_step.field_definitions,
+                ):
+                    return
+                if next_step.entry_action.mode is not EntryActionMode.DIRECT:
+                    aliases = (
+                        next_step.entry_action.aliases
+                        if next_step.entry_action.mode is EntryActionMode.CLICK
+                        else self._auto_entry_aliases(
+                            session.request.model_copy(
+                                update={
+                                    "fields": next_step.fields,
+                                    "field_definitions": next_step.field_definitions,
+                                }
+                            )
+                        )
+                    )
+                    actions = await self._observer.observe_entry_actions(
+                        page,
+                        session.request.job_id,
+                        aliases,
+                    )
+                    if any(candidate.confidence > 0 for candidate in actions.candidates):
+                        return
+                if (
+                    next_step.entry_action.mode is not EntryActionMode.CLICK
+                    and self._requested_fields_are_present(
+                        observed,
+                        next_step.fields,
+                        next_step.field_definitions,
+                    )
+                ):
+                    return
+            except PlaywrightError:
+                pass
+            await asyncio.sleep(0.1)
+        raise TimeoutError(
+            f"提交后未在超时时间内出现下一步“{next_step.name}”的入口或字段"
+        )
+
+    def _requested_fields_are_present(
+        self,
+        observed: ObservedPage,
+        fields: dict[str, str],
+        definitions: list[FieldDefinition],
+    ) -> bool:
+        requested = set(fields)
+        matches = self._mapper.map_fields(observed.elements, definitions)
+        return any(match.canonical_field in requested for match in matches)
+
+    def _requested_form_is_present(
+        self,
+        observed: ObservedPage,
+        fields: dict[str, str],
+        definitions: list[FieldDefinition],
+    ) -> bool:
+        requested = set(fields)
+        if not requested:
+            return False
+        matches = self._mapper.map_fields(observed.elements, definitions)
+        matched = {match.canonical_field for match in matches}
+        return requested.issubset(matched)
 
     def _candidate_sets(
         self,
@@ -1349,6 +1663,26 @@ class PlaywrightBrowserWorker:
         return parsed._replace(query="", fragment="").geturl()
 
     @staticmethod
+    def _same_page_url(left: str, right: str) -> bool:
+        if left == "about:blank" or right == "about:blank":
+            return False
+        left_url = urlsplit(left)
+        right_url = urlsplit(right)
+        return (
+            left_url.scheme.casefold(),
+            left_url.hostname.casefold() if left_url.hostname else "",
+            left_url.port,
+            left_url.path or "/",
+            left_url.query,
+        ) == (
+            right_url.scheme.casefold(),
+            right_url.hostname.casefold() if right_url.hostname else "",
+            right_url.port,
+            right_url.path or "/",
+            right_url.query,
+        )
+
+    @staticmethod
     def _is_loopback(value: str) -> bool:
         hostname = urlsplit(value).hostname
         return hostname in {"127.0.0.1", "localhost", "::1"}
@@ -1370,18 +1704,21 @@ class PlaywrightBrowserWorker:
     @staticmethod
     async def _dismiss_safe_popup(page: Page) -> bool:
         for frame in page.frames:
-            candidates = frame.get_by_role(
-                "button",
-                name=re.compile(
-                    r"^(关闭|稍后|拒绝|仅必要|不再提示|\u00d7|close|not now)$",
-                    re.IGNORECASE,
-                ),
-            )
-            for index in range(await candidates.count()):
-                candidate = candidates.nth(index)
-                if await candidate.is_visible():
-                    await candidate.click()
-                    return True
+            try:
+                candidates = frame.get_by_role(
+                    "button",
+                    name=re.compile(
+                        r"^(关闭|稍后|拒绝|仅必要|不再提示|\u00d7|close|not now)$",
+                        re.IGNORECASE,
+                    ),
+                )
+                for index in range(await candidates.count()):
+                    candidate = candidates.nth(index)
+                    if await candidate.is_visible():
+                        await candidate.click()
+                        return True
+            except PlaywrightError:
+                continue
         return False
 
     async def _fill(

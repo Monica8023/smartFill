@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -85,6 +86,8 @@ from smartfill.tasks import (
     TaskRepository,
     TaskService,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TaskCreate(BaseModel):
@@ -191,6 +194,12 @@ def create_app(
         worker=worker,
         secret_store=secret_store,
         repository=job_repository,
+        artifacts_root=runtime.browser_artifacts_root,
+        terminal_status_callback=lambda task_id, job_status: _sync_task_failure(
+            task_service,
+            task_id,
+            job_status,
+        ),
     )
     batches = BatchManager(
         repository=batch_repository,
@@ -644,6 +653,23 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.get("/api/v1/browser/jobs/{job_id}/diagnostic")
+    def get_browser_job_diagnostic(job_id: str) -> FileResponse:
+        _get_job_or_404(browser_jobs, job_id)
+        try:
+            diagnostic_path = browser_jobs.get_diagnostic_path(job_id)
+        except FileNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Diagnostic log is not available",
+            ) from error
+        return FileResponse(
+            diagnostic_path,
+            media_type="text/plain; charset=utf-8",
+            filename=Path(diagnostic_path).name,
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.websocket("/api/v1/browser/jobs/{job_id}/stream")
     async def stream_browser_job(websocket: WebSocket, job_id: str) -> None:
         try:
@@ -683,6 +709,24 @@ def create_app(
             browser_jobs.unsubscribe(job_id, queue)
 
     return app
+
+
+def _sync_task_failure(
+    task_service: TaskService,
+    task_id: str,
+    job_status: BrowserJobStatus,
+) -> None:
+    if job_status is not BrowserJobStatus.FAILED:
+        return
+    try:
+        task = task_service.get(task_id)
+        if task.status in {TaskStatus.RUNNING, TaskStatus.PAUSED}:
+            task_service.fail(task_id)
+    except (TaskNotFoundError, InvalidTransitionError):
+        logger.exception(
+            "Failed to synchronize browser failure to task task_id=%s",
+            task_id,
+        )
 
 
 def _get_or_404(service: TaskService, task_id: str) -> Task:

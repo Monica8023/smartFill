@@ -100,12 +100,27 @@ _DEFAULT_DEFINITIONS = {
             autocomplete_hints=["username"],
         ),
         FieldDefinition(
+            key="account.email",
+            display_name="账号邮箱",
+            aliases=["账号邮箱", "注册邮箱", "email", "email address"],
+            input_kind=FieldInputKind.EMAIL,
+        ),
+        FieldDefinition(
             key="account.password",
             display_name="密码",
             aliases=["密码", "password", "passwd", "pwd"],
             input_kind=FieldInputKind.PASSWORD,
             sensitive=True,
             autocomplete_hints=["current-password", "new-password"],
+        ),
+        FieldDefinition(
+            key="account.passwordConfirmation",
+            display_name="确认密码",
+            aliases=["确认密码", "再次输入密码", "confirm password", "password confirmation"],
+            input_kind=FieldInputKind.PASSWORD,
+            sensitive=True,
+            source_field="account.password",
+            autocomplete_hints=["new-password"],
         ),
         FieldDefinition(
             key="person.fullName",

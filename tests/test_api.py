@@ -114,6 +114,15 @@ class HumanApiWorker(ApiFakeWorker):
         )
 
 
+class FailingApiWorker(ApiFakeWorker):
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        raise RuntimeError("synthetic API worker failure")
+
+
 def make_client(
     *,
     api_token: str | None = None,
@@ -409,6 +418,45 @@ def test_browser_job_api_runs_and_never_returns_plaintext_sensitive_values() -> 
     assert job.json()["completed_fields"] == 3
     assert "P@ssw0rd!" not in job.text
     assert "110101199001011234" not in job.text
+
+
+def test_browser_job_failure_updates_task_and_exposes_diagnostic_download() -> None:
+    with make_client(browser_worker=FailingApiWorker()) as client:
+        task = client.post(
+            "/api/v1/tasks",
+            json={
+                "name": "失败状态同步",
+                "target_origin": "https://target.example.com",
+                "record_count": 1,
+            },
+        ).json()
+        client.post(f"/api/v1/tasks/{task['id']}/validate")
+        client.post(f"/api/v1/tasks/{task['id']}/start")
+
+        response = client.post(
+            "/api/v1/browser/jobs",
+            json={
+                "task_id": task["id"],
+                "target_url": "https://target.example.com/profile",
+                "fields": {"person.fullName": "张三"},
+            },
+        )
+        job_id = response.json()["id"]
+        current = response.json()
+        for _ in range(100):
+            current = client.get(f"/api/v1/browser/jobs/{job_id}").json()
+            if current["status"] == "failed":
+                break
+            time.sleep(0.01)
+
+        failed_task = client.get(f"/api/v1/tasks/{task['id']}").json()
+        diagnostic = client.get(current["diagnostic_url"])
+
+    assert current["status"] == "failed"
+    assert current["diagnostic_id"] in current["message"]
+    assert failed_task["status"] == "failed"
+    assert diagnostic.status_code == 200
+    assert "RuntimeError: synthetic API worker failure" in diagnostic.text
 
 
 def test_browser_job_api_accepts_task_scoped_dynamic_field_schema() -> None:

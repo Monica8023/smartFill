@@ -39,6 +39,7 @@ interface EditableField {
   sourceField: string
   autocompleteHints: string[]
   value: string
+  required?: boolean
 }
 
 const statusText: Record<BrowserJobStatus, string> = {
@@ -68,7 +69,7 @@ const initialForm: FormState = {
   targetUrl: defaultTargetUrl(),
   submissionPolicy: 'fill_only',
   submissionButtonAliases: '提交, 保存, 登录, 注册, submit, save, login, register',
-  entryActionMode: 'direct',
+  entryActionMode: 'auto',
   entryActionAliases: '登录, 登陆, Login, Sign in',
 }
 
@@ -99,7 +100,9 @@ function targetUrlParts(value: string): { origin: string; path: string } {
 function fallbackFieldName(key: string): string {
   const names: Record<string, string> = {
     'account.username': '用户名',
+    'account.email': '账号邮箱',
     'account.password': '密码',
+    'account.passwordConfirmation': '确认密码',
     'person.fullName': '姓名',
     'person.gender': '性别',
     'person.idNumber': '身份证号',
@@ -125,6 +128,67 @@ function parseAliases(value: string): string[] {
   return [...new Set(value.split(/[,，\n]/).map((alias) => alias.trim()).filter(Boolean))]
 }
 
+type SnapshotStep = NonNullable<
+  NonNullable<BrowserJob['configuration_snapshot']>['steps']
+>[number]
+
+function fallbackFieldDefinition(key: string): FieldDefinition {
+  const sensitive = /(password|idNumber|phone)$/i.test(key)
+  const inputKind: FieldInputKind = /password$/i.test(key)
+    ? 'password'
+    : /email$/i.test(key)
+      ? 'email'
+      : /phone$/i.test(key)
+        ? 'tel'
+        : 'text'
+  return {
+    key,
+    display_name: fallbackFieldName(key),
+    aliases: [fallbackFieldName(key), key],
+    input_kind: inputKind,
+    sensitive,
+    source_field: null,
+    autocomplete_hints: [],
+  }
+}
+
+function reusableStepFromSnapshot(step: SnapshotStep): WorkflowStepPayload {
+  const definitions = step.field_definitions.length
+    ? step.field_definitions
+    : step.field_names.map(fallbackFieldDefinition)
+  return {
+    id: step.id,
+    name: step.name,
+    target_url: step.target_url,
+    fields: Object.fromEntries(definitions
+      .filter((definition) => !definition.source_field)
+      .map((definition) => [
+        definition.key,
+        definition.sensitive ? '' : (step.field_values?.[definition.key] ?? ''),
+      ])),
+    field_definitions: definitions,
+    entry_action: step.entry_action,
+    submission: step.submission,
+  }
+}
+
+function editableFieldsFromWorkflowStep(step: WorkflowStepPayload): EditableField[] {
+  const definitions = step.field_definitions ?? Object.keys(step.fields).map(fallbackFieldDefinition)
+  return definitions.map((definition, index) => ({
+    id: `reused-${index}-${definition.key.replace(/[^A-Za-z0-9]/g, '-')}`,
+    key: definition.key,
+    displayName: definition.display_name,
+    aliases: definition.aliases.join(', '),
+    inputKind: definition.input_kind,
+    sensitive: definition.sensitive,
+    sourceField: definition.source_field ?? '',
+    autocompleteHints: definition.autocomplete_hints,
+    value: definition.source_field ? '' : (step.fields[definition.key] ?? ''),
+    required: !definition.source_field
+      && Object.prototype.hasOwnProperty.call(step.fields, definition.key),
+  }))
+}
+
 export function App({ client: injectedClient }: AppProps) {
   const [activeView, setActiveView] = useState<'console' | 'tasks' | 'import' | 'settings'>('console')
   const [apiToken, setApiToken] = useState('')
@@ -146,6 +210,7 @@ export function App({ client: injectedClient }: AppProps) {
   const [targetOrigins, setTargetOrigins] = useState<string[]>([])
   const [settingsMessage, setSettingsMessage] = useState('')
   const [savedWorkflowSteps, setSavedWorkflowSteps] = useState<WorkflowStepPayload[]>([])
+  const [editingWorkflowStepIndex, setEditingWorkflowStepIndex] = useState<number | null>(null)
   const [importWorkflows, setImportWorkflows] = useState<BrowserJob[]>([])
   const [importWorkflowId, setImportWorkflowId] = useState('')
   const [importFile, setImportFile] = useState<File | null>(null)
@@ -238,6 +303,51 @@ export function App({ client: injectedClient }: AppProps) {
       setSelectedHistory(await client.getJob(historyJob.id))
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '任务详情加载失败')
+    }
+  }
+
+  const loadWorkflowStepDraft = (step: WorkflowStepPayload) => {
+    setForm((current) => ({
+      ...current,
+      stepName: step.name,
+      targetUrl: step.target_url,
+      submissionPolicy: step.submission?.policy ?? 'fill_only',
+      submissionButtonAliases: (step.submission?.button_aliases ?? []).join(', '),
+      entryActionMode: step.entry_action?.mode ?? 'auto',
+      entryActionAliases: (step.entry_action?.aliases ?? []).join(', '),
+    }))
+    setFields(editableFieldsFromWorkflowStep(step))
+    setShowFieldConfiguration(true)
+  }
+
+  const reuseHistory = async (historyJob: BrowserJob) => {
+    setError('')
+    try {
+      const detail = await client.getJob(historyJob.id)
+      const snapshotSteps = detail.configuration_snapshot?.steps ?? []
+      if (!snapshotSteps.length) throw new Error('该任务没有可复用的配置快照')
+      const reusableSteps = snapshotSteps.map(reusableStepFromSnapshot)
+      setSavedWorkflowSteps(reusableSteps)
+      setEditingWorkflowStepIndex(0)
+      setForm((current) => ({
+        ...current,
+        taskName: `${detail.name ?? detail.task_id}（复用）`,
+      }))
+      loadWorkflowStepDraft(reusableSteps[0])
+      disconnectRef.current?.()
+      setJob(null)
+      setSelectedHistory(null)
+      setRunning(false)
+      setHumanMappings({})
+      setHumanSubmitElement('')
+      setHumanEntryElement('')
+      if (screenshotRef.current) URL.revokeObjectURL(screenshotRef.current)
+      screenshotRef.current = null
+      setScreenshot(null)
+      setScanMessage('配置已回填；密码、证件号、手机号等敏感字段不会从历史记录恢复，请重新填写')
+      setActiveView('console')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '任务复用失败')
     }
   }
 
@@ -438,8 +548,18 @@ export function App({ client: injectedClient }: AppProps) {
     }
   }
 
-  const buildCurrentWorkflowStep = (): WorkflowStepPayload => {
-    const activeFields = fields.filter((field) => field.value.trim() || field.sourceField)
+  const buildCurrentWorkflowStep = (validateRequired = true): WorkflowStepPayload => {
+    const missingRequiredFields = fields.filter((field) => (
+      field.required && !field.sourceField && !field.value.trim()
+    ))
+    if (validateRequired && missingRequiredFields.length) {
+      throw new Error(
+        `复用步骤“${form.stepName}”需要重新填写：${missingRequiredFields.map((field) => field.displayName).join('、')}`,
+      )
+    }
+    const activeFields = fields.filter((field) => (
+      field.value.trim() || field.sourceField || (!validateRequired && field.required)
+    ))
     if (activeFields.length === 0) throw new Error('请至少填写一个资料字段')
     const fieldKeyPattern = /^[a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+$/
     const keys = activeFields.map((field) => field.key.trim())
@@ -488,18 +608,54 @@ export function App({ client: injectedClient }: AppProps) {
     setError('')
     try {
       const step = buildCurrentWorkflowStep()
-      setSavedWorkflowSteps((current) => [...current, step])
-      setFields((current) => current.map((field) => ({ ...field, value: '' })))
+      const nextSteps = editingWorkflowStepIndex === null
+        ? [...savedWorkflowSteps, step]
+        : savedWorkflowSteps.map((item, index) => (
+          index === editingWorkflowStepIndex ? step : item
+        ))
+      setSavedWorkflowSteps(nextSteps)
+      setEditingWorkflowStepIndex(null)
+      setFields((current) => current.map((field) => ({ ...field, value: '', required: false })))
       setForm((current) => ({
         ...current,
-        stepName: `步骤 ${savedWorkflowSteps.length + 2}`,
-        entryActionMode: 'direct',
+        stepName: `步骤 ${nextSteps.length + 1}`,
+        entryActionMode: 'auto',
         submissionPolicy: 'fill_only',
       }))
       setScanMessage('上一工作流步骤已保存，请配置下一步目标页面和字段')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '工作流步骤保存失败')
     }
+  }
+
+  const editWorkflowStep = (index: number) => {
+    if (editingWorkflowStepIndex === index) return
+    setError('')
+    try {
+      const nextSteps = [...savedWorkflowSteps]
+      if (editingWorkflowStepIndex !== null) {
+        nextSteps[editingWorkflowStepIndex] = buildCurrentWorkflowStep(false)
+      } else if (fields.some((field) => field.value.trim() || field.sourceField)) {
+        nextSteps.push(buildCurrentWorkflowStep())
+      }
+      const targetStep = nextSteps[index]
+      if (!targetStep) throw new Error('工作流步骤不存在')
+      setSavedWorkflowSteps(nextSteps)
+      setEditingWorkflowStepIndex(index)
+      loadWorkflowStepDraft(targetStep)
+      setScanMessage(`正在编辑第 ${index + 1} 步：${targetStep.name}`)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '工作流步骤切换失败')
+    }
+  }
+
+  const removeWorkflowStep = (index: number) => {
+    setSavedWorkflowSteps((current) => current.filter((_, itemIndex) => itemIndex !== index))
+    setEditingWorkflowStepIndex((current) => {
+      if (current === null) return null
+      if (current === index) return null
+      return current > index ? current - 1 : current
+    })
   }
 
   const runTask = async (event: React.FormEvent) => {
@@ -509,10 +665,26 @@ export function App({ client: injectedClient }: AppProps) {
     disconnectRef.current?.()
     try {
       const currentStep = buildCurrentWorkflowStep()
-      const workflowSteps = savedWorkflowSteps.length
+      const configuredSteps = editingWorkflowStepIndex === null
         ? [...savedWorkflowSteps, currentStep]
-        : []
-      const target = new URL(workflowSteps[0]?.target_url ?? currentStep.target_url)
+        : savedWorkflowSteps.map((step, index) => (
+          index === editingWorkflowStepIndex ? currentStep : step
+        ))
+      for (const step of configuredSteps) {
+        const missing = (step.field_definitions ?? [])
+          .filter((definition) => (
+            !definition.source_field
+            && Object.prototype.hasOwnProperty.call(step.fields, definition.key)
+            && !step.fields[definition.key].trim()
+          ))
+        if (missing.length) {
+          throw new Error(
+            `复用步骤“${step.name}”需要重新填写：${missing.map((definition) => definition.display_name).join('、')}`,
+          )
+        }
+      }
+      const workflowSteps = configuredSteps.length > 1 ? configuredSteps : []
+      const target = new URL(configuredSteps[0]?.target_url ?? currentStep.target_url)
       const task = await client.createTask({
         name: form.taskName.trim(),
         target_origin: target.origin,
@@ -542,7 +714,7 @@ export function App({ client: injectedClient }: AppProps) {
     if (!job?.intervention) return
     if (job.intervention.kind === 'entry_action_confirmation') {
       if (!humanEntryElement) {
-        setError('请选择要点击的登录入口')
+        setError('请选择要点击的表单入口')
         return
       }
       setError('')
@@ -556,7 +728,7 @@ export function App({ client: injectedClient }: AppProps) {
         setJob(resumed)
         connectToJob(job.id)
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : '登录入口确认失败')
+        setError(caught instanceof Error ? caught.message : '表单入口确认失败')
         setRunning(false)
       }
       return
@@ -664,6 +836,14 @@ export function App({ client: injectedClient }: AppProps) {
                     onClick={() => void openHistory(historyJob)}
                   >
                     {selectedHistory?.id === historyJob.id ? '收起详情' : '查看详情'}
+                  </button>
+                  <button
+                    className="secondary-button reuse-button"
+                    type="button"
+                    aria-label={`复用任务 ${historyJob.name ?? historyJob.task_id}`}
+                    onClick={() => void reuseHistory(historyJob)}
+                  >
+                    复用
                   </button>
                 </article>
               ))}
@@ -836,16 +1016,34 @@ export function App({ client: injectedClient }: AppProps) {
           <form className="panel task-panel" onSubmit={runTask}>
             <div className="panel-heading">
               <div><p className="step">01 · CONFIGURE</p><h2>配置执行任务</h2></div>
-              <span className="badge">{savedWorkflowSteps.length + 1} 个工作流步骤</span>
+              <span className="badge">
+                {editingWorkflowStepIndex === null ? savedWorkflowSteps.length + 1 : savedWorkflowSteps.length} 个工作流步骤
+              </span>
             </div>
 
             {savedWorkflowSteps.length > 0 && (
               <div className="workflow-step-list" aria-label="已保存工作流步骤">
                 {savedWorkflowSteps.map((step, index) => (
-                  <article key={`${step.name}-${index}`}>
+                  <article className={editingWorkflowStepIndex === index ? 'active' : ''} key={`${step.name}-${index}`}>
                     <span>{index + 1}</span>
                     <div><strong>{step.name}</strong><small>{step.target_url} · {Object.keys(step.fields).length} 个字段</small></div>
-                    <button type="button" aria-label={`删除工作流步骤 ${step.name}`} onClick={() => setSavedWorkflowSteps((current) => current.filter((_, itemIndex) => itemIndex !== index))}>删除</button>
+                    <button
+                      type="button"
+                      className="edit-step-button"
+                      aria-label={`编辑工作流步骤 ${step.name}`}
+                      disabled={editingWorkflowStepIndex === index}
+                      onClick={() => editWorkflowStep(index)}
+                    >
+                      {editingWorkflowStepIndex === index ? '编辑中' : '编辑'}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`删除工作流步骤 ${step.name}`}
+                      disabled={editingWorkflowStepIndex === index}
+                      onClick={() => removeWorkflowStep(index)}
+                    >
+                      删除
+                    </button>
                   </article>
                 ))}
               </div>
@@ -864,7 +1062,7 @@ export function App({ client: injectedClient }: AppProps) {
                   )}
                   required
                 >
-                  {!targetOrigins.length && (
+                  {!targetOrigins.includes(targetUrlParts(form.targetUrl).origin) && (
                     <option value={targetUrlParts(form.targetUrl).origin}>
                       {targetUrlParts(form.targetUrl).origin}
                     </option>
@@ -894,8 +1092,9 @@ export function App({ client: injectedClient }: AppProps) {
                   value={form.entryActionMode}
                   onChange={(event) => setField('entryActionMode', event.target.value as EntryActionMode)}
                 >
+                  <option value="auto">自动识别并进入目标表单</option>
                   <option value="direct">当前地址就是表单页</option>
-                  <option value="click">先点击登录入口</option>
+                  <option value="click">按别名点击指定入口</option>
                 </select>
               </label>
               {form.entryActionMode === 'click' && (
@@ -952,7 +1151,10 @@ export function App({ client: injectedClient }: AppProps) {
                         onChange={(event) => updateDynamicField(field.id, { value: event.target.value })}
                         type={field.sensitive ? 'password' : (field.inputKind === 'select' ? 'text' : field.inputKind)}
                         disabled={Boolean(field.sourceField)}
-                        placeholder={field.sourceField ? `复制 ${field.sourceField}` : undefined}
+                        required={Boolean(field.required && !field.sourceField)}
+                        placeholder={field.sourceField
+                          ? `复制 ${field.sourceField}`
+                          : (field.sensitive && field.required ? '历史敏感值不会回填，请重新输入' : undefined)}
                         autoComplete="off"
                       />
                     )}
@@ -1134,9 +1336,9 @@ export function App({ client: injectedClient }: AppProps) {
               <form className="human-form" onSubmit={resolveHumanIntervention}>
                 {job.intervention.kind === 'entry_action_confirmation' && (
                   <label>
-                    <span>登录入口候选</span>
+                    <span>表单入口候选</span>
                     <select
-                      aria-label="登录入口候选"
+                      aria-label="表单入口候选"
                       value={humanEntryElement}
                       onChange={(event) => setHumanEntryElement(event.target.value)}
                       required
@@ -1235,7 +1437,7 @@ export function App({ client: injectedClient }: AppProps) {
                 </article>
               )) : <div className="empty-timeline">任务事件将在这里实时出现</div>}
             </div>
-            {job && <div className={`result-banner ${job.status}`}><strong>{job.message}</strong><span>{job.completed_fields}/{job.total_fields} 字段已验证</span></div>}
+            {job && <div className={`result-banner ${job.status}`}><strong>{job.message}</strong><span>{job.completed_fields}/{job.total_fields} 字段已验证</span>{job.diagnostic_url && <a href={job.diagnostic_url} target="_blank" rel="noreferrer">下载诊断日志</a>}</div>}
           </section>
         </div>
       </main>)}

@@ -20,6 +20,7 @@ from smartfill.browser_jobs import (
     SubmissionConfig,
     WorkflowStep,
 )
+from smartfill.domain import TaskStatus
 from smartfill.field_schema import FieldDefinition
 from smartfill.importing import ImportPreview, ProfileRecord
 from smartfill.secrets import SecretStore
@@ -227,7 +228,11 @@ class BatchManager:
             else BatchStatus.COMPLETED_WITH_ERRORS
         )
         self._save(batch, status=final_status, completed_at=datetime.now(UTC))
-        self._task_service.complete(batch.task_id)
+        task = self._task_service.get(batch.task_id)
+        if batch.failed_records == 0 and task.status is TaskStatus.RUNNING:
+            self._task_service.complete(batch.task_id)
+        elif batch.failed_records > 0 and task.status is TaskStatus.RUNNING:
+            self._task_service.fail(batch.task_id)
 
     def _mark_failed(self, batch: BatchRun, index: int, message: str) -> BatchRun:
         item = batch.items[index].model_copy(

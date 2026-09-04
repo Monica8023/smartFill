@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
@@ -20,6 +23,8 @@ from smartfill.field_schema import (
     resolve_field_definitions,
 )
 from smartfill.secrets import SecretStore
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserJobStatus(StrEnum):
@@ -45,6 +50,7 @@ class SubmissionPolicy(StrEnum):
 
 
 class EntryActionMode(StrEnum):
+    AUTO = "auto"
     DIRECT = "direct"
     CLICK = "click"
 
@@ -52,7 +58,7 @@ class EntryActionMode(StrEnum):
 class EntryActionConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    mode: EntryActionMode = EntryActionMode.DIRECT
+    mode: EntryActionMode = EntryActionMode.AUTO
     aliases: list[str] = Field(
         default_factory=lambda: ["登录", "登陆", "Login", "Sign in"],
         max_length=20,
@@ -317,6 +323,8 @@ class JobProgress(BaseModel):
     entry_action_performed: bool = False
     current_step: int | None = Field(default=None, ge=1)
     current_step_name: str | None = Field(default=None, max_length=120)
+    diagnostic_id: str | None = Field(default=None, max_length=64)
+    diagnostic_url: str | None = Field(default=None, max_length=2_048)
 
 
 class BrowserRunResult(JobProgress):
@@ -398,7 +406,7 @@ class BrowserJob(BaseModel):
     total_fields: int
     submission_policy: SubmissionPolicy = SubmissionPolicy.FILL_ONLY
     submitted: bool = False
-    entry_action_mode: EntryActionMode = EntryActionMode.DIRECT
+    entry_action_mode: EntryActionMode = EntryActionMode.AUTO
     entry_action_performed: bool = False
     current_step: int = Field(default=1, ge=1)
     current_step_name: str = "表单填写"
@@ -406,6 +414,8 @@ class BrowserJob(BaseModel):
     configuration_snapshot: dict[str, Any] = Field(default_factory=dict)
     screenshot_url: str | None = None
     intervention: HumanIntervention | None = None
+    diagnostic_id: str | None = Field(default=None, max_length=64)
+    diagnostic_url: str | None = Field(default=None, max_length=2_048)
     events: list[JobEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -434,10 +444,14 @@ class BrowserJobManager:
         worker: BrowserAutomationWorker,
         secret_store: SecretStore,
         repository: BrowserJobRepository | None = None,
+        artifacts_root: Path = Path("artifacts"),
+        terminal_status_callback: Callable[[str, BrowserJobStatus], None] | None = None,
     ) -> None:
         self._worker = worker
         self._secret_store = secret_store
         self._repository = repository
+        self._artifacts_root = artifacts_root.resolve()
+        self._terminal_status_callback = terminal_status_callback
         restored = repository.list() if repository is not None else []
         self._jobs: dict[str, BrowserJob] = {job.id: job for job in restored}
         self._requests: dict[str, BrowserRunRequest] = {}
@@ -535,6 +549,15 @@ class BrowserJobManager:
                     "name": step.name,
                     "target_url": BrowserJobManager._safe_display_url(step.target_url),
                     "field_names": list(step.fields),
+                    "field_values": {
+                        definition.key: step.fields[definition.key]
+                        for definition in step.field_definitions
+                        if (
+                            definition.source_field is None
+                            and not definition.sensitive
+                            and definition.key in step.fields
+                        )
+                    },
                     "field_definitions": [
                         definition.model_dump(mode="json")
                         for definition in step.field_definitions
@@ -628,6 +651,15 @@ class BrowserJobManager:
             except KeyError as error:
                 raise FileNotFoundError(job_id) from error
 
+    def get_diagnostic_path(self, job_id: str) -> str:
+        job = self.get(job_id)
+        if job.diagnostic_id is None:
+            raise FileNotFoundError(job_id)
+        path = self._diagnostic_path(job_id, job.diagnostic_id)
+        if not path.is_file():
+            raise FileNotFoundError(job_id)
+        return str(path)
+
     def subscribe(self, job_id: str) -> asyncio.Queue[BrowserJob]:
         job = self.get(job_id)
         queue: asyncio.Queue[BrowserJob] = asyncio.Queue(maxsize=25)
@@ -653,16 +685,33 @@ class BrowserJobManager:
                 request,
                 lambda progress: self._update(job_id, progress),
             )
-        except Exception:
+        except Exception as error:
+            current = self.get(job_id)
+            diagnostic_id, diagnostic_url = self._record_failure(
+                job_id,
+                phase="run",
+                error=error,
+            )
             await self._update(
                 job_id,
                 JobProgress(
                     status=BrowserJobStatus.FAILED,
-                    message="Browser Worker 执行失败, 请查看服务端诊断日志",
+                    message=(
+                        "Browser Worker 执行失败; "
+                        f"诊断 ID: {diagnostic_id}, 可下载诊断日志"
+                    ),
+                    diagnostic_id=diagnostic_id,
+                    diagnostic_url=diagnostic_url,
+                    current_url=current.current_url,
+                    completed_fields=current.completed_fields,
+                    current_step=current.current_step,
+                    current_step_name=current.current_step_name,
                 ),
             )
+            self._notify_terminal_status(job_id, BrowserJobStatus.FAILED)
             return
         await self._update(job_id, result)
+        self._notify_terminal_status(job_id, result.status)
 
     async def _resume(self, job_id: str, resolution: HumanResolution) -> None:
         try:
@@ -671,16 +720,122 @@ class BrowserJobManager:
                 resolution,
                 lambda progress: self._update(job_id, progress),
             )
-        except Exception:
+        except Exception as error:
+            current = self.get(job_id)
+            diagnostic_id, diagnostic_url = self._record_failure(
+                job_id,
+                phase="resume",
+                error=error,
+            )
             await self._update(
                 job_id,
                 JobProgress(
                     status=BrowserJobStatus.FAILED,
-                    message="Browser Worker 恢复失败, 请查看服务端诊断日志",
+                    message=(
+                        "Browser Worker 恢复失败; "
+                        f"诊断 ID: {diagnostic_id}, 可下载诊断日志"
+                    ),
+                    diagnostic_id=diagnostic_id,
+                    diagnostic_url=diagnostic_url,
+                    current_url=current.current_url,
+                    completed_fields=current.completed_fields,
+                    current_step=current.current_step,
+                    current_step_name=current.current_step_name,
                 ),
             )
+            self._notify_terminal_status(job_id, BrowserJobStatus.FAILED)
             return
         await self._update(job_id, result)
+        self._notify_terminal_status(job_id, result.status)
+
+    def _record_failure(
+        self,
+        job_id: str,
+        *,
+        phase: str,
+        error: Exception,
+    ) -> tuple[str, str]:
+        diagnostic_id = uuid4().hex[:12]
+        job = self.get(job_id)
+        path = self._diagnostic_path(job_id, diagnostic_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        details = self._redact_diagnostic_secrets(
+            job_id,
+            "".join(
+                [
+                    f"diagnostic_id: {diagnostic_id}\n",
+                    f"job_id: {job_id}\n",
+                    f"task_id: {job.task_id}\n",
+                    f"phase: {phase}\n",
+                    f"job_status: {job.status.value}\n",
+                    f"current_step: {job.current_step} ({job.current_step_name})\n",
+                    f"current_url: {job.current_url or 'unknown'}\n",
+                    f"created_at: {datetime.now(UTC).isoformat()}\n\n",
+                    *traceback.format_exception(type(error), error, error.__traceback__),
+                ]
+            ),
+        )
+        path.write_text(details, encoding="utf-8")
+        logger.error(
+            "Browser Worker failed diagnostic_id=%s job_id=%s phase=%s diagnostic=%s",
+            diagnostic_id,
+            job_id,
+            phase,
+            path,
+        )
+        return diagnostic_id, f"/api/v1/browser/jobs/{job_id}/diagnostic"
+
+    def _redact_diagnostic_secrets(self, job_id: str, value: str) -> str:
+        request = self._requests.get(job_id)
+        if request is None:
+            return value
+        field_groups = (
+            [step.fields for step in request.workflow_steps]
+            if request.workflow_steps
+            else [request.fields]
+        )
+        secrets: set[str] = set()
+        for fields in field_groups:
+            for field_value in fields.values():
+                if not field_value.startswith("secret://"):
+                    continue
+                try:
+                    secrets.add(self._secret_store.resolve(field_value))
+                except (KeyError, ValueError):
+                    continue
+        redacted = value
+        for secret in sorted(secrets, key=len, reverse=True):
+            if secret:
+                redacted = redacted.replace(secret, "[REDACTED]")
+        return redacted
+
+    def _diagnostic_path(self, job_id: str, diagnostic_id: str) -> Path:
+        return (
+            self._artifacts_root
+            / "jobs"
+            / job_id
+            / f"diagnostic-{diagnostic_id}.log"
+        )
+
+    def _notify_terminal_status(
+        self,
+        job_id: str,
+        status: BrowserJobStatus,
+    ) -> None:
+        if self._terminal_status_callback is None or status not in {
+            BrowserJobStatus.COMPLETED,
+            BrowserJobStatus.FAILED,
+            BrowserJobStatus.CANCELLED,
+        }:
+            return
+        try:
+            self._terminal_status_callback(self.get(job_id).task_id, status)
+        except Exception:
+            logger.exception(
+                "Browser task status synchronization failed job_id=%s status=%s",
+                job_id,
+                status.value,
+            )
 
     def _track(self, job_id: str, coroutine: Coroutine[Any, Any, None]) -> None:
         task: asyncio.Task[None] = asyncio.create_task(
@@ -769,7 +924,10 @@ class BrowserJobManager:
                         else current.current_url
                     ),
                     "current_field": progress.current_field,
-                    "completed_fields": progress.completed_fields,
+                    "completed_fields": max(
+                        current.completed_fields,
+                        progress.completed_fields,
+                    ),
                     "submitted": current.submitted or progress.submitted,
                     "entry_action_performed": (
                         current.entry_action_performed
@@ -785,6 +943,8 @@ class BrowserJobManager:
                         else current.screenshot_url
                     ),
                     "intervention": progress.intervention,
+                    "diagnostic_id": progress.diagnostic_id or current.diagnostic_id,
+                    "diagnostic_url": progress.diagnostic_url or current.diagnostic_url,
                     "events": [*current.events, event],
                     "updated_at": datetime.now(UTC),
                 }

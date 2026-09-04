@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import pytest
 
@@ -177,6 +178,30 @@ class EntryConfirmationWorker(RecordingWorker):
             entry_action_performed=True,
         )
 
+
+class FailingWorker(RecordingWorker):
+    def __init__(self, secret_store: InMemorySecretStore) -> None:
+        super().__init__()
+        self._secret_store = secret_store
+
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        await report(
+            JobProgress(
+                status=BrowserJobStatus.NAVIGATING,
+                message="正在执行失败前的步骤",
+                current_url=request.target_url,
+                completed_fields=1,
+                current_step=2,
+                current_step_name="添加笔记",
+            )
+        )
+        password = self._secret_store.resolve(request.fields["account.password"])
+        raise RuntimeError(f"synthetic worker failure near {password}")
+
 @pytest.mark.asyncio
 async def test_job_manager_replaces_sensitive_values_before_worker_execution() -> None:
     worker = RecordingWorker()
@@ -350,6 +375,56 @@ async def test_job_manager_publishes_progress_and_terminal_state() -> None:
     assert manager.get(job.id).completed_fields == 1
 
 
+@pytest.mark.asyncio
+async def test_job_manager_persists_a_downloadable_diagnostic_and_notifies_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    terminal_states: list[tuple[str, BrowserJobStatus]] = []
+    secret_store = InMemorySecretStore()
+    manager = BrowserJobManager(
+        worker=FailingWorker(secret_store),
+        secret_store=secret_store,
+        artifacts_root=tmp_path,
+        terminal_status_callback=lambda task_id, status: terminal_states.append(
+            (task_id, status)
+        ),
+    )
+    job = manager.create(
+        BrowserJobCreate(
+            task_id="task-failure",
+            target_url="https://target.example.com/profile",
+            fields={
+                "person.fullName": "张三",
+                "account.password": "do-not-log-this-password",
+            },
+        )
+    )
+
+    with caplog.at_level("ERROR"):
+        await manager.run(job.id)
+
+    failed = manager.get(job.id)
+    diagnostic_path = manager.get_diagnostic_path(job.id)
+    diagnostic_text = Path(diagnostic_path).read_text(encoding="utf-8")
+    assert failed.status is BrowserJobStatus.FAILED
+    assert failed.completed_fields == 1
+    assert failed.current_step == 2
+    assert failed.current_step_name == "添加笔记"
+    assert failed.current_url == "https://target.example.com/profile"
+    assert failed.diagnostic_id
+    assert failed.diagnostic_id in failed.message
+    assert failed.diagnostic_url == f"/api/v1/browser/jobs/{job.id}/diagnostic"
+    assert "RuntimeError: synthetic worker failure near [REDACTED]" in diagnostic_text
+    assert "do-not-log-this-password" not in diagnostic_text
+    assert "do-not-log-this-password" not in caplog.text
+    assert job.id in diagnostic_text
+    assert "current_step: 2 (添加笔记)" in diagnostic_text
+    assert "current_url: https://target.example.com/profile" in diagnostic_text
+    assert failed.diagnostic_id in caplog.text
+    assert terminal_states == [("task-failure", BrowserJobStatus.FAILED)]
+
+
 def test_job_payload_rejects_unknown_fields_and_javascript_urls() -> None:
     with pytest.raises(ValueError, match="Unsupported canonical field"):
         BrowserJobCreate(
@@ -387,7 +462,7 @@ def test_entry_action_requires_semantic_aliases_when_clicking() -> None:
         aliases=["登录", "Login", "Login"],
     )
 
-    assert direct.mode is EntryActionMode.DIRECT
+    assert direct.mode is EntryActionMode.AUTO
     assert click.aliases == ["登录", "Login"]
 
     with pytest.raises(ValueError, match="aliases"):
@@ -437,6 +512,12 @@ def test_workflow_job_contains_ordered_steps_and_redacted_configuration_snapshot
         "登录",
         "完善资料",
     ]
+    assert job.configuration_snapshot["steps"][0]["field_values"] == {
+        "account.username": "demo-user",
+    }
+    assert job.configuration_snapshot["steps"][1]["field_values"] == {
+        "person.fullName": "张三",
+    }
     assert "do-not-persist" not in job.model_dump_json()
     request = manager._get_request(job.id)
     assert len(request.workflow_steps) == 2

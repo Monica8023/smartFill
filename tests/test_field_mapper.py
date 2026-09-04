@@ -149,3 +149,93 @@ def test_explicit_aliases_disambiguate_password_and_confirmation_fields() -> Non
         "account.password": "sf-password",
         "account.passwordConfirmation": "sf-confirm",
     }
+
+
+def test_login_form_context_treats_an_email_input_as_the_login_identifier() -> None:
+    elements = [
+        DomElement(
+            element_id="sf-email",
+            tag="input",
+            input_type="text",
+            label="Email address",
+            name="email",
+            form_context="Login Sign in",
+        ),
+        DomElement(
+            element_id="sf-password",
+            tag="input",
+            input_type="password",
+            label="Password",
+            name="password",
+            form_context="Login Sign in",
+        ),
+    ]
+
+    matches = SemanticFieldMapper().map_fields(
+        elements,
+        ["account.username", "account.password"],
+    )
+
+    assert {match.canonical_field: match.element_id for match in matches} == {
+        "account.username": "sf-email",
+        "account.password": "sf-password",
+    }
+
+
+def test_registration_context_discovers_account_email_and_confirmation_password() -> None:
+    elements = [
+        DomElement(
+            element_id="sf-email",
+            tag="input",
+            input_type="email",
+            label="Email address",
+            name="email",
+            form_context="Register Create an account",
+        ),
+        DomElement(
+            element_id="sf-password",
+            tag="input",
+            input_type="password",
+            label="Password",
+            name="password",
+            form_context="Register Create an account",
+        ),
+        DomElement(
+            element_id="sf-confirm",
+            tag="input",
+            input_type="password",
+            label="Confirm Password",
+            name="confirmPassword",
+            form_context="Register Create an account",
+        ),
+    ]
+    mapper = SemanticFieldMapper()
+
+    matches = mapper.map_fields(
+        elements,
+        [
+            "account.email",
+            "account.password",
+            "account.passwordConfirmation",
+        ],
+    )
+
+    assert {match.canonical_field: match.element_id for match in matches} == {
+        "account.email": "sf-email",
+        "account.password": "sf-password",
+        "account.passwordConfirmation": "sf-confirm",
+    }
+
+
+def test_ascii_aliases_use_token_boundaries_instead_of_substrings() -> None:
+    element = DomElement(
+        element_id="sf-username",
+        tag="input",
+        input_type="text",
+        label="Username",
+        name="username",
+    )
+
+    matches = SemanticFieldMapper().map_fields([element], ["person.fullName"])
+
+    assert matches == []

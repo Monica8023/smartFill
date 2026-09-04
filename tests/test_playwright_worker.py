@@ -121,6 +121,42 @@ AMBIGUOUS_ENTRY_HTML = """<!doctype html>
   <main><a href="/login-form">Login</a></main>
 </body></html>"""
 
+AUTO_ENTRY_HOME_HTML = """<!doctype html>
+<html lang="en"><head><title>Notes App</title></head><body>
+  <main>
+    <h1>Welcome to Notes App</h1>
+    <a href="/email-login-form">Login</a>
+    <a href="/register-form">Create an account</a>
+  </main>
+</body></html>"""
+
+EMAIL_LOGIN_FORM_HTML = """<!doctype html>
+<html lang="en"><head><title>Login</title></head><body>
+  <main aria-label="Login">
+    <h1>Login</h1>
+    <form>
+      <label>Email address <input name="email" type="email"></label>
+      <label>Password <input name="password" type="password"></label>
+      <button type="button">Login</button>
+    </form>
+  </main>
+</body></html>"""
+
+REGISTER_FORM_HTML = """<!doctype html>
+<html lang="en"><head><title>Register</title></head><body>
+  <main aria-label="Registration">
+    <h1>Register</h1>
+    <form>
+      <label>Email address <input name="email" type="email"></label>
+      <label>Name <input name="name" type="text"></label>
+      <label>Password <input name="password" type="password">
+        <label>Confirm Password <input name="confirmPassword" type="password"></label>
+      </label>
+      <button type="button">Register</button>
+    </form>
+  </main>
+</body></html>"""
+
 WORKFLOW_LOGIN_HTML = """<!doctype html>
 <html lang="zh-CN"><body>
   <form action="/workflow-profile" method="get">
@@ -138,10 +174,107 @@ WORKFLOW_PROFILE_HTML = """<!doctype html>
   </form>
 </body></html>"""
 
+SPA_NOTES_HTML = """<!doctype html>
+<html lang="en"><body>
+  <main id="app">
+    <form id="login-form">
+      <label>Email address <input name="email" type="email"></label>
+      <label>Password <input name="password" type="password"></label>
+      <button type="button" id="login">Login</button>
+    </form>
+  </main>
+  <script>
+    document.querySelector('#login').addEventListener('click', () => {
+      window.setTimeout(() => {
+        document.querySelector('#app').innerHTML = `
+          <p>Logged in</p><button type="button" id="add-note">+ Add Note</button>`
+        document.querySelector('#add-note').addEventListener('click', () => {
+          window.setTimeout(() => {
+            document.querySelector('#app').insertAdjacentHTML('beforeend', `
+              <div role="dialog" aria-label="Add new note">
+                <label>Category <select name="category">
+                  <option value="Home">Home</option>
+                </select></label>
+                <label>Title <input name="title"></label>
+                <label>Description <textarea name="description"></textarea></label>
+                <button type="button" id="create-note">Create</button>
+              </div>`)
+          }, 150)
+        })
+      }, 150)
+    })
+  </script>
+</body></html>"""
+
+DELAYED_LOGIN_HTML = """<!doctype html>
+<html lang="en"><body>
+  <form>
+    <label>Email address <input name="email" type="email"></label>
+    <label>Password <input name="password" type="password"></label>
+    <button type="button" id="login">Login</button>
+  </form>
+  <script>
+    document.querySelector('#login').addEventListener('click', () => {
+      window.location.href = '/delayed-notes'
+    })
+  </script>
+</body></html>"""
+
+DELAYED_NOTES_HTML = """<!doctype html>
+<html lang="en"><body>
+  <nav>""" + "".join(
+    f'<button type="button">Navigation {index}</button>' for index in range(25)
+) + """</nav>
+  <main id="app">Loading...</main>
+  <script>
+    window.setTimeout(() => {
+      document.querySelector('#app').innerHTML =
+        '<button type="button" id="add-note">+ Add Note</button>'
+      document.querySelector('#add-note').addEventListener('click', () => {
+        document.querySelector('#app').innerHTML = `
+          <div role="dialog" aria-label="Add new note">
+            <button type="button" aria-label="Close">&times;</button>
+            <label>Category <select name="category">
+              <option value="Home">Home</option>
+            </select></label>
+            <label>Title <input name="title"></label>
+            <label>Description <textarea name="description"></textarea></label>
+            <button type="button" id="create-note">Create</button>
+          </div>`
+      })
+    }, 250)
+  </script>
+</body></html>"""
+
+OPEN_NOTE_FORM_HTML = """<!doctype html>
+<html lang="en"><body>
+  <nav>""" + "".join(
+    f'<button type="button">Navigation {index}</button>' for index in range(25)
+) + """</nav>
+  <div role="dialog" aria-label="Add new note">
+    <button type="button" aria-label="Close">&times;</button>
+    <label>Category <select name="category">
+      <option value="Home">Home</option>
+    </select></label>
+    <label>Title <input name="title"></label>
+    <label>Description <textarea name="description"></textarea></label>
+    <button type="button" id="create-note">Create</button>
+  </div>
+</body></html>"""
+
+MANY_ACTIONS_HTML = """<!doctype html>
+<html lang="en"><body><main>""" + "".join(
+    f'<button type="button">Navigation {index}</button>' for index in range(25)
+) + """</main></body></html>"""
+
 
 class TargetHandler(BaseHTTPRequestHandler):
+    spa_notes_requests = 0
+
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
+        if path == "/spa-notes":
+            type(self).spa_notes_requests += 1
         pages = {
             "/composed": COMPOSED_HTML,
             "/frame": FRAME_HTML,
@@ -152,8 +285,16 @@ class TargetHandler(BaseHTTPRequestHandler):
             "/login-home": LOGIN_HOME_HTML,
             "/login-form": LOGIN_FORM_HTML,
             "/ambiguous-entry": AMBIGUOUS_ENTRY_HTML,
+            "/auto-entry-home": AUTO_ENTRY_HOME_HTML,
+            "/email-login-form": EMAIL_LOGIN_FORM_HTML,
+            "/register-form": REGISTER_FORM_HTML,
             "/workflow-login": WORKFLOW_LOGIN_HTML,
             "/workflow-profile": WORKFLOW_PROFILE_HTML,
+            "/spa-notes": SPA_NOTES_HTML,
+            "/delayed-login": DELAYED_LOGIN_HTML,
+            "/delayed-notes": DELAYED_NOTES_HTML,
+            "/open-note-form": OPEN_NOTE_FORM_HTML,
+            "/many-actions": MANY_ACTIONS_HTML,
         }
         content = pages.get(path, TARGET_HTML).encode()
         self.send_response(200)
@@ -168,6 +309,7 @@ class TargetHandler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def target_server() -> str:
+    TargetHandler.spa_notes_requests = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -176,6 +318,44 @@ def target_server() -> str:
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def note_step(target_url: str) -> WorkflowStep:
+    return WorkflowStep(
+        name="添加笔记",
+        target_url=target_url,
+        fields={
+            "custom.category": "Home",
+            "custom.title": "TDD note",
+            "custom.description": "Created after SPA login",
+        },
+        field_definitions=[
+            FieldDefinition(
+                key="custom.category",
+                display_name="Category",
+                aliases=["Category"],
+                input_kind="select",
+            ),
+            FieldDefinition(
+                key="custom.title",
+                display_name="Title",
+                aliases=["Title"],
+            ),
+            FieldDefinition(
+                key="custom.description",
+                display_name="Description",
+                aliases=["Description"],
+            ),
+        ],
+        entry_action=EntryActionConfig(
+            mode=EntryActionMode.CLICK,
+            aliases=["Add Note"],
+        ),
+        submission=SubmissionConfig(
+            policy=SubmissionPolicy.AUTO_SUBMIT,
+            button_aliases=["Create"],
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -282,6 +462,208 @@ async def test_worker_executes_login_then_profile_steps_in_one_browser_context(
         "登录",
         "完善资料",
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_waits_for_spa_transition_and_reuses_same_url_for_next_step(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    reports: list[JobProgress] = []
+
+    async def report(progress: JobProgress) -> None:
+        reports.append(progress)
+
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+        action_timeout_ms=3_000,
+    )
+    target_url = f"{target_server}/spa-notes"
+    steps = [
+        WorkflowStep(
+            name="登录",
+            target_url=target_url,
+            fields={
+                "account.username": "demo@example.com",
+                "account.password": "secret",
+            },
+            submission=SubmissionConfig(
+                policy=SubmissionPolicy.AUTO_SUBMIT,
+                button_aliases=["Login"],
+            ),
+        ),
+        WorkflowStep(
+            name="添加笔记",
+            target_url=target_url,
+            fields={
+                "custom.category": "Home",
+                "custom.title": "TDD note",
+                "custom.description": "Created after SPA login",
+            },
+            field_definitions=[
+                FieldDefinition(
+                    key="custom.category",
+                    display_name="Category",
+                    aliases=["Category"],
+                    input_kind="select",
+                ),
+                FieldDefinition(
+                    key="custom.title",
+                    display_name="Title",
+                    aliases=["Title"],
+                ),
+                FieldDefinition(
+                    key="custom.description",
+                    display_name="Description",
+                    aliases=["Description"],
+                ),
+            ],
+            entry_action=EntryActionConfig(
+                mode=EntryActionMode.CLICK,
+                aliases=["Add Note"],
+            ),
+            submission=SubmissionConfig(
+                policy=SubmissionPolicy.AUTO_SUBMIT,
+                button_aliases=["Create"],
+            ),
+        ),
+    ]
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-spa-notes",
+            task_id="task-spa-notes",
+            target_url=target_url,
+            fields=steps[0].fields,
+            workflow_steps=steps,
+        ),
+        report,
+    )
+
+    assert result.status is BrowserJobStatus.COMPLETED
+    assert result.completed_fields == 5
+    assert result.submitted is True
+    assert TargetHandler.spa_notes_requests == 1
+    assert any("复用当前页面" in item.message for item in reports)
+    assert any(
+        item.status is BrowserJobStatus.ENTERING and "Add Note" in item.message
+        for item in reports
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_waits_for_cross_url_spa_content_before_starting_next_step(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    reports: list[JobProgress] = []
+
+    async def report(progress: JobProgress) -> None:
+        reports.append(progress)
+
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+        action_timeout_ms=3_000,
+    )
+    login_step = WorkflowStep(
+        name="登录",
+        target_url=f"{target_server}/delayed-login",
+        fields={
+            "account.username": "demo@example.com",
+            "account.password": "secret",
+        },
+        submission=SubmissionConfig(
+            policy=SubmissionPolicy.AUTO_SUBMIT,
+            button_aliases=["Login"],
+        ),
+    )
+    notes_step = note_step(f"{target_server}/delayed-notes")
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-cross-url-spa",
+            task_id="task-cross-url-spa",
+            target_url=login_step.target_url,
+            fields=login_step.fields,
+            workflow_steps=[login_step, notes_step],
+        ),
+        report,
+    )
+
+    assert result.status is BrowserJobStatus.COMPLETED
+    assert result.completed_fields == 5
+    assert result.submitted is True
+    assert any(
+        item.status is BrowserJobStatus.ENTERING and "Add Note" in item.message
+        for item in reports
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_skips_configured_entry_when_target_form_is_already_open(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+    step = note_step(f"{target_server}/open-note-form")
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-open-note-form",
+            task_id="task-open-note-form",
+            target_url=step.target_url,
+            fields=step.fields,
+            field_definitions=step.field_definitions,
+            submission=step.submission,
+            entry_action=step.entry_action,
+        ),
+        lambda _progress: _completed_awaitable(),
+    )
+
+    assert result.status is BrowserJobStatus.COMPLETED
+    assert result.completed_fields == 3
+
+
+@pytest.mark.asyncio
+async def test_worker_limits_unmatched_entry_candidates_for_human_review(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-many-actions",
+            task_id="task-many-actions",
+            target_url=f"{target_server}/many-actions",
+            fields={"person.fullName": "张三"},
+            entry_action=EntryActionConfig(
+                mode=EntryActionMode.CLICK,
+                aliases=["Open form"],
+            ),
+        ),
+        lambda _progress: _completed_awaitable(),
+    )
+
+    assert result.status is BrowserJobStatus.NEED_HUMAN
+    assert result.intervention is not None
+    assert len(result.intervention.entry_candidates) == 20
 
 
 @pytest.mark.asyncio
@@ -571,6 +953,159 @@ async def test_worker_clicks_login_entry_then_scans_and_fills_login_form(
 
 
 @pytest.mark.asyncio
+async def test_worker_auto_plans_login_entry_and_uses_form_context_for_email_login(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-auto-login-entry",
+            task_id="task-auto-login-entry",
+            target_url=f"{target_server}/auto-entry-home",
+            fields={
+                "account.username": "demo@example.com",
+                "account.password": "temporary-password",
+            },
+        ),
+        lambda _progress: _completed_awaitable(),
+    )
+
+    assert result.status is BrowserJobStatus.COMPLETED
+    assert result.completed_fields == 2
+    assert result.entry_action_performed is True
+    assert result.current_url is not None
+    assert urlsplit(result.current_url).path == "/email-login-form"
+
+
+@pytest.mark.asyncio
+async def test_worker_auto_plans_registration_and_maps_related_fields(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+    definitions = [
+        FieldDefinition(
+            key="account.email",
+            display_name="注册邮箱",
+            aliases=["Email", "Email address"],
+            input_kind="email",
+        ),
+        FieldDefinition(
+            key="person.fullName",
+            display_name="姓名",
+            aliases=["Name", "Full Name"],
+        ),
+        FieldDefinition(
+            key="account.password",
+            display_name="密码",
+            aliases=["Password"],
+            input_kind="password",
+            sensitive=True,
+        ),
+        FieldDefinition(
+            key="account.passwordConfirmation",
+            display_name="确认密码",
+            aliases=["Confirm Password", "Confirm"],
+            input_kind="password",
+            sensitive=True,
+            source_field="account.password",
+        ),
+    ]
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-auto-register-entry",
+            task_id="task-auto-register-entry",
+            target_url=f"{target_server}/auto-entry-home",
+            fields={
+                "account.email": "demo@example.com",
+                "person.fullName": "Demo User",
+                "account.password": "temporary-password",
+            },
+            field_definitions=definitions,
+        ),
+        lambda _progress: _completed_awaitable(),
+    )
+
+    assert result.status is BrowserJobStatus.COMPLETED
+    assert result.completed_fields == 4
+    assert result.entry_action_performed is True
+    assert result.current_url is not None
+    assert urlsplit(result.current_url).path == "/register-form"
+
+
+@pytest.mark.asyncio
+async def test_worker_auto_planning_asks_when_the_task_does_not_imply_an_entry_goal(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+
+    result = await worker.run(
+        BrowserRunRequest(
+            job_id="job-auto-unknown-entry",
+            task_id="task-auto-unknown-entry",
+            target_url=f"{target_server}/auto-entry-home",
+            fields={"person.fullName": "Demo User"},
+        ),
+        lambda _progress: _completed_awaitable(),
+    )
+
+    assert result.status is BrowserJobStatus.NEED_HUMAN
+    assert result.intervention is not None
+    assert result.intervention.kind.value == "entry_action_confirmation"
+    assert {candidate.accessible_name for candidate in result.intervention.entry_candidates} == {
+        "Login",
+        "Create an account",
+    }
+
+
+@pytest.mark.asyncio
+async def test_page_scan_discovers_registration_field_relationships(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+
+    result = await worker.scan_page(
+        PageScanRequest(
+            target_url=f"{target_server}/register-form",
+            entry_action=EntryActionConfig(mode=EntryActionMode.DIRECT),
+        )
+    )
+
+    assert [field.key for field in result.fields] == [
+        "account.email",
+        "person.fullName",
+        "account.password",
+        "account.passwordConfirmation",
+    ]
+    assert result.fields[-1].source_field == "account.password"
+
+
+@pytest.mark.asyncio
 async def test_page_scan_clicks_login_entry_and_discovers_login_field_schema(
     target_server: str,
     tmp_path: Path,
@@ -601,6 +1136,30 @@ async def test_page_scan_clicks_login_entry_and_discovers_login_field_schema(
     ]
     assert result.fields[1].input_kind.value == "password"
     assert result.fields[1].sensitive is True
+
+
+@pytest.mark.asyncio
+async def test_page_scan_auto_enters_a_login_form_when_the_landing_page_has_no_fields(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+
+    result = await worker.scan_page(
+        PageScanRequest(target_url=f"{target_server}/auto-entry-home")
+    )
+
+    assert result.entry_action_performed is True
+    assert urlsplit(result.final_url).path == "/email-login-form"
+    assert [field.key for field in result.fields] == [
+        "account.username",
+        "account.password",
+    ]
 
 
 @pytest.mark.asyncio

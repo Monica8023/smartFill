@@ -85,8 +85,8 @@ flowchart LR
 | Screenshot | 🟡 | 每个字段执行后截图，敏感字段模糊，并在 Web 展示 | 截图尚未进入识图/LLM 决策链 |
 | OmniParser | ⬜ | 尚未接入 | 需要元素检测、边界框、OCR 和稳定 element id 输出 |
 | LLM | 🟡 | 阿里云百炼 Qwen-VL `VisionProvider` 适配器和输出校验已有测试 | 尚未注入 `PlaywrightBrowserWorker`，当前运行不调用模型 |
-| Semantic Field Mapping | ✅ v1 | 支持任务级动态字段 Schema、登录页字段发现、别名、类型、autocomplete、派生字段和人工候选确认 | 尚无 LLM/视觉回退和模板持久化学习 |
-| Playwright | ✅ v1 | 支持首页登录入口识别、跳转后重扫描、多步骤填写、回读、路由拦截、可选提交策略，并在人工确认期间保留和恢复原会话 | 尚缺任意点击/等待/断言等通用动作和业务成功条件验证 |
+| Semantic Field Mapping | ✅ v1 | 支持任务级动态字段 Schema、表单上下文、登录邮箱、确认密码关系、类型、autocomplete、派生字段和人工候选确认 | 尚无 LLM/视觉回退和模板持久化学习 |
+| Playwright | ✅ v1 | 默认 AUTO 入口规划，可根据字段意图区分登录/注册入口，支持跳转后重扫描、多步骤填写、回读、路由拦截和可选提交策略 | 尚缺任意点击/等待/断言等通用动作和业务成功条件验证 |
 | Chromium | ✅ v1 | 支持隔离启动和 `connect_over_cdp` | CDP 会话池、账号级 Profile 生命周期和并发资源管理尚未实现 |
 | Web 操作台 | ✅ v1 | 工作流配置、页面扫描、动态字段、提交策略、实时状态、可折叠任务详情、白名单 URL 选择及用户批量导入均已接入 | 独立模板库和浏览器远程画面控制尚未实现 |
 

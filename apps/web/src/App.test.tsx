@@ -146,6 +146,178 @@ describe('SmartFill console', () => {
     expect(screen.queryByText('配置快照')).not.toBeInTheDocument()
   })
 
+  it('reuses a task from history and backfills its multi-step console draft', async () => {
+    const client = createClient()
+    const reusable = await client.getJob('job-1')
+    vi.mocked(client.getJob).mockResolvedValue({
+      ...reusable,
+      name: 'Notes 场景',
+      configuration_snapshot: {
+        version: 1,
+        steps: [
+          {
+            id: 'login-step',
+            name: '登录',
+            target_url: 'https://practice.expandtesting.com/notes/app',
+            field_names: ['account.username', 'account.password'],
+            field_values: { 'account.username': 'demo@example.com' },
+            field_definitions: [
+              {
+                key: 'account.username',
+                display_name: 'Email address',
+                aliases: ['Email address', 'Email'],
+                input_kind: 'email',
+                sensitive: false,
+                source_field: null,
+                autocomplete_hints: ['username'],
+              },
+              {
+                key: 'account.password',
+                display_name: 'Password',
+                aliases: ['Password'],
+                input_kind: 'password',
+                sensitive: true,
+                source_field: null,
+                autocomplete_hints: ['current-password'],
+              },
+            ],
+            entry_action: { mode: 'auto', aliases: ['Login'] },
+            submission: { policy: 'auto_submit', button_aliases: ['Login'] },
+          },
+          {
+            id: 'note-step',
+            name: '添加笔记',
+            target_url: 'https://practice.expandtesting.com/notes/app',
+            field_names: ['custom.category', 'custom.title', 'custom.description'],
+            field_values: {
+              'custom.category': 'Home',
+              'custom.title': 'Reusable note',
+              'custom.description': 'Backfilled description',
+            },
+            field_definitions: [
+              {
+                key: 'custom.category',
+                display_name: 'Category',
+                aliases: ['Category'],
+                input_kind: 'select',
+                sensitive: false,
+                source_field: null,
+                autocomplete_hints: [],
+              },
+              {
+                key: 'custom.title',
+                display_name: 'Title',
+                aliases: ['Title'],
+                input_kind: 'text',
+                sensitive: false,
+                source_field: null,
+                autocomplete_hints: [],
+              },
+              {
+                key: 'custom.description',
+                display_name: 'Description',
+                aliases: ['Description'],
+                input_kind: 'text',
+                sensitive: false,
+                source_field: null,
+                autocomplete_hints: [],
+              },
+            ],
+            entry_action: { mode: 'click', aliases: ['Add Note'] },
+            submission: { policy: 'auto_submit', button_aliases: ['Create'] },
+          },
+        ],
+      },
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.click(screen.getByRole('button', { name: '任务列表' }))
+    await screen.findByText('登录后完善资料')
+    await user.click(screen.getByRole('button', {
+      name: '复用任务 登录后完善资料',
+    }))
+
+    expect(await screen.findByRole('heading', {
+      name: '浏览器自动化控制台',
+    })).toBeVisible()
+    expect(screen.getByLabelText('任务名称')).toHaveValue('Notes 场景（复用）')
+    expect(screen.getByLabelText('当前步骤名称')).toHaveValue('登录')
+    expect(screen.getByLabelText('Email address')).toHaveValue('demo@example.com')
+    expect(screen.getByLabelText('Password')).toHaveValue('')
+    await user.type(screen.getByLabelText('Password'), 'new-password')
+
+    await user.click(screen.getByRole('button', {
+      name: '编辑工作流步骤 添加笔记',
+    }))
+    expect(screen.getByLabelText('当前步骤名称')).toHaveValue('添加笔记')
+    expect(screen.getByLabelText('Category')).toHaveValue('Home')
+    expect(screen.getByLabelText('Title')).toHaveValue('Reusable note')
+    expect(screen.getByLabelText('Description')).toHaveValue('Backfilled description')
+    expect(screen.getByLabelText('进入表单方式')).toHaveValue('click')
+    expect(screen.getByLabelText('入口按钮别名')).toHaveValue('Add Note')
+
+    await user.clear(screen.getByLabelText('Category'))
+    await user.clear(screen.getByLabelText('Title'))
+    await user.clear(screen.getByLabelText('Description'))
+    await user.click(screen.getByRole('button', {
+      name: '编辑工作流步骤 登录',
+    }))
+    expect(screen.getByLabelText('当前步骤名称')).toHaveValue('登录')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', {
+      name: '编辑工作流步骤 添加笔记',
+    }))
+    expect(screen.getByLabelText('Category')).toHaveValue('')
+    expect(screen.getByLabelText('Title')).toHaveValue('')
+    expect(screen.getByLabelText('Description')).toHaveValue('')
+    await user.type(screen.getByLabelText('Category'), 'Home')
+    await user.type(screen.getByLabelText('Title'), 'Reusable note')
+    await user.type(screen.getByLabelText('Description'), 'Backfilled description')
+
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+    await waitFor(() => expect(client.createBrowserJob).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workflow_steps: [
+          expect.objectContaining({
+            name: '登录',
+            fields: {
+              'account.username': 'demo@example.com',
+              'account.password': 'new-password',
+            },
+          }),
+          expect.objectContaining({
+            name: '添加笔记',
+            fields: {
+              'custom.category': 'Home',
+              'custom.title': 'Reusable note',
+              'custom.description': 'Backfilled description',
+            },
+          }),
+        ],
+      }),
+    ))
+  })
+
+  it('explains when an older task has no reusable snapshot', async () => {
+    const client = createClient()
+    const detail = await client.getJob('job-1')
+    vi.mocked(client.getJob).mockResolvedValue({
+      ...detail,
+      configuration_snapshot: undefined,
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.click(screen.getByRole('button', { name: '任务列表' }))
+    await screen.findByText('登录后完善资料')
+    await user.click(screen.getByRole('button', {
+      name: '复用任务 登录后完善资料',
+    }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('该任务没有可复用的配置快照')
+  })
+
   it('loads the target URL selector from the runtime allowlist', async () => {
     render(<App client={createClient()} />)
 
@@ -154,6 +326,13 @@ describe('SmartFill console', () => {
     expect(within(selector).getByRole('option', {
       name: 'http://127.0.0.1:8000',
     })).toBeVisible()
+  })
+
+  it('uses automatic form entry planning by default', async () => {
+    render(<App client={createClient()} />)
+
+    expect(await screen.findByLabelText('进入表单方式')).toHaveValue('auto')
+    expect(screen.queryByLabelText('入口按钮别名')).not.toBeInTheDocument()
   })
 
   it('imports user data and starts a selected workflow as a batch', async () => {
@@ -413,6 +592,36 @@ describe('SmartFill console', () => {
     }))
   })
 
+  it('shows a diagnostic download when the Browser Worker fails', async () => {
+    const client = createClient()
+    const queued = await client.createBrowserJob({
+      task_id: 'task-1',
+      target_url: 'http://127.0.0.1:8000/demo/target',
+      fields: { 'person.fullName': '张三' },
+    })
+    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
+      onUpdate({
+        ...queued,
+        status: 'failed',
+        message: 'Browser Worker 执行失败; 诊断 ID: abc123',
+        diagnostic_id: 'abc123',
+        diagnostic_url: '/api/v1/browser/jobs/job-1/diagnostic',
+      })
+      return () => undefined
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.type(screen.getByLabelText('姓名'), '张三')
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+
+    const download = await screen.findByRole('link', { name: '下载诊断日志' })
+    expect(download).toHaveAttribute(
+      'href',
+      '/api/v1/browser/jobs/job-1/diagnostic',
+    )
+  })
+
   it('requires an explicit click to approve an observed submit candidate', async () => {
     const client = createClient()
     const waiting: BrowserJob = {
@@ -559,7 +768,7 @@ describe('SmartFill console', () => {
 
     await user.type(screen.getByLabelText('用户名'), 'demo-user')
     await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
-    expect(await screen.findByLabelText('登录入口候选')).toHaveValue('sf-entry-job-0')
+    expect(await screen.findByLabelText('表单入口候选')).toHaveValue('sf-entry-job-0')
     await user.click(screen.getByRole('button', { name: '确认并进入登录页' }))
 
     expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {
