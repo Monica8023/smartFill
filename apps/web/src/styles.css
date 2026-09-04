@@ -138,6 +138,8 @@ h2 { font-size: 18px; }
 .result-banner { margin-top: 16px; padding: 12px 14px; border-radius: 8px; background: #edf1ee; display: flex; justify-content: space-between; gap: 20px; font-size: 11px; }
 .result-banner.completed { background: #e5f8ef; color: #176244; }
 .result-banner.failed, .result-banner.need_human { background: #fff0ed; color: #8f2e2e; }
+.close-browser-button { border: 1px solid currentColor; border-radius: 7px; background: #fff; color: inherit; padding: 6px 10px; font-weight: 700; }
+.close-browser-button:disabled { opacity: .6; cursor: progress; }
 
 .page-workspace { display: grid; align-content: start; gap: 18px; }
 .page-workspace .topbar { margin-bottom: 0; }

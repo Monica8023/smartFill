@@ -180,6 +180,7 @@ class BrowserJobCreate(BaseModel):
     submission: SubmissionConfig = Field(default_factory=SubmissionConfig)
     entry_action: EntryActionConfig = Field(default_factory=EntryActionConfig)
     workflow_steps: list[WorkflowStep] = Field(default_factory=list, max_length=10)
+    keep_browser_open: bool = False
 
     @field_validator("target_url")
     @classmethod
@@ -227,6 +228,7 @@ class BrowserRunRequest(BaseModel):
     submission: SubmissionConfig = Field(default_factory=SubmissionConfig)
     entry_action: EntryActionConfig = Field(default_factory=EntryActionConfig)
     workflow_steps: list[WorkflowStep] = Field(default_factory=list, max_length=10)
+    keep_browser_open: bool = False
 
     @model_validator(mode="after")
     def prepare_dynamic_fields(self) -> BrowserRunRequest:
@@ -325,6 +327,7 @@ class JobProgress(BaseModel):
     current_step_name: str | None = Field(default=None, max_length=120)
     diagnostic_id: str | None = Field(default=None, max_length=64)
     diagnostic_url: str | None = Field(default=None, max_length=2_048)
+    browser_session_open: bool | None = None
 
 
 class BrowserRunResult(JobProgress):
@@ -416,6 +419,7 @@ class BrowserJob(BaseModel):
     intervention: HumanIntervention | None = None
     diagnostic_id: str | None = Field(default=None, max_length=64)
     diagnostic_url: str | None = Field(default=None, max_length=2_048)
+    browser_session_open: bool = False
     events: list[JobEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -453,6 +457,12 @@ class BrowserJobManager:
         self._artifacts_root = artifacts_root.resolve()
         self._terminal_status_callback = terminal_status_callback
         restored = repository.list() if repository is not None else []
+        # A browser process cannot survive a service restart even if the last
+        # persisted job snapshot said its inspection session was still open.
+        restored = [
+            job.model_copy(update={"browser_session_open": False})
+            for job in restored
+        ]
         self._jobs: dict[str, BrowserJob] = {job.id: job for job in restored}
         self._requests: dict[str, BrowserRunRequest] = {}
         self._screenshot_paths: dict[str, str] = {}
@@ -514,6 +524,7 @@ class BrowserJobManager:
             submission=first_step.submission,
             entry_action=first_step.entry_action,
             workflow_steps=protected_steps if payload.workflow_steps else [],
+            keep_browser_open=payload.keep_browser_open,
         )
         with self._lock:
             self._jobs[job.id] = job
@@ -628,6 +639,29 @@ class BrowserJobManager:
                 message="任务已由操作员终止, 浏览器会话已释放",
                 current_url=job.current_url,
                 completed_fields=job.completed_fields,
+            ),
+        )
+        return self.get(job_id)
+
+    async def close_browser(self, job_id: str) -> BrowserJob:
+        """Release a completed job's browser retained for operator inspection."""
+
+        job = self.get(job_id)
+        if job.status is not BrowserJobStatus.COMPLETED:
+            raise ValueError("Only a completed browser job can close its browser")
+        if not job.browser_session_open:
+            return job
+        await self._worker.cancel(job_id)
+        await self._update(
+            job_id,
+            JobProgress(
+                status=BrowserJobStatus.COMPLETED,
+                message="工作流执行完成, 浏览器已由操作员关闭",
+                current_url=job.current_url,
+                completed_fields=job.completed_fields,
+                current_step=job.current_step,
+                current_step_name=job.current_step_name,
+                browser_session_open=False,
             ),
         )
         return self.get(job_id)
@@ -945,6 +979,11 @@ class BrowserJobManager:
                     "intervention": progress.intervention,
                     "diagnostic_id": progress.diagnostic_id or current.diagnostic_id,
                     "diagnostic_url": progress.diagnostic_url or current.diagnostic_url,
+                    "browser_session_open": (
+                        progress.browser_session_open
+                        if progress.browser_session_open is not None
+                        else current.browser_session_open
+                    ),
                     "events": [*current.events, event],
                     "updated_at": datetime.now(UTC),
                 }

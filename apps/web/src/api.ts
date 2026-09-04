@@ -148,6 +148,7 @@ export interface BrowserJob {
   intervention?: HumanIntervention | null
   diagnostic_id?: string | null
   diagnostic_url?: string | null
+  browser_session_open?: boolean
   events: JobEvent[]
   created_at: string
   updated_at: string
@@ -161,6 +162,7 @@ export interface BrowserJobPayload {
   submission?: SubmissionConfig
   entry_action?: EntryActionConfig
   workflow_steps?: WorkflowStepPayload[]
+  keep_browser_open?: boolean
 }
 
 export interface WorkflowStepPayload {
@@ -247,6 +249,7 @@ export interface SmartFillClient {
   createBrowserJob(payload: BrowserJobPayload): Promise<BrowserJob>
   resolveBrowserJob(jobId: string, resolution: HumanResolution): Promise<BrowserJob>
   cancelBrowserJob(jobId: string): Promise<BrowserJob>
+  closeBrowserJob(jobId: string): Promise<BrowserJob>
   connectJobStream(jobId: string, onUpdate: (job: BrowserJob) => void): () => void
   fetchScreenshot(jobId: string): Promise<string | null>
   listJobs(): Promise<BrowserJob[]>
@@ -301,6 +304,10 @@ export class HttpSmartFillClient implements SmartFillClient {
 
   cancelBrowserJob(jobId: string): Promise<BrowserJob> {
     return this.request(`/api/v1/browser/jobs/${jobId}/cancel`, { method: 'POST' })
+  }
+
+  closeBrowserJob(jobId: string): Promise<BrowserJob> {
+    return this.request(`/api/v1/browser/jobs/${jobId}/browser/close`, { method: 'POST' })
   }
 
   listJobs(): Promise<BrowserJob[]> {

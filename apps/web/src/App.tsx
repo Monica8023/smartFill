@@ -198,6 +198,7 @@ export function App({ client: injectedClient }: AppProps) {
   const [job, setJob] = useState<BrowserJob | null>(null)
   const [screenshot, setScreenshot] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [closingBrowser, setClosingBrowser] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [scanMessage, setScanMessage] = useState('')
   const [error, setError] = useState('')
@@ -700,6 +701,7 @@ export function App({ client: injectedClient }: AppProps) {
         submission: currentStep.submission,
         entry_action: currentStep.entry_action,
         workflow_steps: workflowSteps.length ? workflowSteps : undefined,
+        keep_browser_open: true,
       })
       setJob(createdJob)
       connectToJob(createdJob.id)
@@ -790,6 +792,20 @@ export function App({ client: injectedClient }: AppProps) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '终止任务失败')
       setRunning(false)
+    }
+  }
+
+  const closeCompletedBrowser = async () => {
+    if (!job?.browser_session_open) return
+    setError('')
+    setClosingBrowser(true)
+    try {
+      const closed = await client.closeBrowserJob(job.id)
+      setJob(closed)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '关闭目标浏览器失败')
+    } finally {
+      setClosingBrowser(false)
     }
   }
 
@@ -1297,7 +1313,8 @@ export function App({ client: injectedClient }: AppProps) {
               {form.submissionPolicy === 'fill_only'
                 ? '仅填写并回读验证，不会点击提交按钮。'
                 : '提交按钮按可访问名称和页面语义匹配，每个任务最多尝试点击一次。'}
-              密码和证件号进入 Worker 前会转换为密钥引用。
+              密码和证件号进入 Worker 前会转换为密钥引用。控制台任务完成后会保留目标浏览器，
+              请在结果区手动关闭。
             </p>
           </form>
 
@@ -1437,7 +1454,21 @@ export function App({ client: injectedClient }: AppProps) {
                 </article>
               )) : <div className="empty-timeline">任务事件将在这里实时出现</div>}
             </div>
-            {job && <div className={`result-banner ${job.status}`}><strong>{job.message}</strong><span>{job.completed_fields}/{job.total_fields} 字段已验证</span>{job.diagnostic_url && <a href={job.diagnostic_url} target="_blank" rel="noreferrer">下载诊断日志</a>}</div>}
+            {job && <div className={`result-banner ${job.status}`}>
+              <strong>{job.message}</strong>
+              <span>{job.completed_fields}/{job.total_fields} 字段已验证</span>
+              {job.diagnostic_url && <a href={job.diagnostic_url} target="_blank" rel="noreferrer">下载诊断日志</a>}
+              {job.browser_session_open && (
+                <button
+                  className="close-browser-button"
+                  type="button"
+                  disabled={closingBrowser}
+                  onClick={closeCompletedBrowser}
+                >
+                  {closingBrowser ? '正在关闭…' : '关闭目标浏览器'}
+                </button>
+              )}
+            </div>}
           </section>
         </div>
       </main>)}

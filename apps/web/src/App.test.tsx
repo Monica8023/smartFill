@@ -32,6 +32,7 @@ function createClient(): SmartFillClient {
     submitted: false,
     entry_action_mode: 'direct',
     entry_action_performed: false,
+    browser_session_open: false,
     screenshot_url: null,
     configuration_snapshot: {
       version: 1,
@@ -114,6 +115,11 @@ function createClient(): SmartFillClient {
     }),
     resolveBrowserJob: vi.fn().mockResolvedValue({ ...completed, status: 'resuming' }),
     cancelBrowserJob: vi.fn().mockResolvedValue({ ...completed, status: 'cancelled' }),
+    closeBrowserJob: vi.fn().mockResolvedValue({
+      ...completed,
+      browser_session_open: false,
+      message: '执行完成，浏览器已由操作员关闭',
+    }),
     previewImport: vi.fn().mockResolvedValue({
       filename: 'people.csv',
       total_rows: 2,
@@ -374,6 +380,14 @@ describe('SmartFill console', () => {
   })
   it('creates a task and shows real-time browser completion', async () => {
     const client = createClient()
+    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
+      void client.getJob('job-1').then((completed) => onUpdate({
+        ...completed,
+        browser_session_open: true,
+        message: '填写完成，浏览器保持打开',
+      }))
+      return () => undefined
+    })
     const user = userEvent.setup()
     render(<App client={client} />)
 
@@ -392,7 +406,10 @@ describe('SmartFill console', () => {
     await user.type(screen.getByLabelText('联系地址'), '北京市朝阳区')
     await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
 
-    expect(await screen.findByText('填写完成')).toBeVisible()
+    expect(await screen.findByText('填写完成，浏览器保持打开')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '关闭目标浏览器' }))
+    expect(client.closeBrowserJob).toHaveBeenCalledWith('job-1')
+    expect(screen.queryByRole('button', { name: '关闭目标浏览器' })).not.toBeInTheDocument()
     expect(client.createTask).toHaveBeenCalledOnce()
     expect(client.validateTask).toHaveBeenCalledWith('task-1')
     expect(client.startTask).toHaveBeenCalledWith('task-1')
@@ -400,6 +417,7 @@ describe('SmartFill console', () => {
       expect.objectContaining({
         task_id: 'task-1',
         fields: expect.objectContaining({ 'person.fullName': '张三' }),
+        keep_browser_open: true,
       }),
     )
   })

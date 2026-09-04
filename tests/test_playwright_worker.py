@@ -667,6 +667,40 @@ async def test_worker_limits_unmatched_entry_candidates_for_human_review(
 
 
 @pytest.mark.asyncio
+async def test_worker_retains_completed_session_when_requested(
+    target_server: str,
+    tmp_path: Path,
+) -> None:
+    worker = PlaywrightBrowserWorker(
+        secret_store=InMemorySecretStore(),
+        allowed_origins={target_server},
+        artifacts_root=tmp_path,
+        headless=True,
+    )
+    request = BrowserRunRequest(
+        job_id="job-retain-completed",
+        task_id="task-retain-completed",
+        target_url=f"{target_server}/profile",
+        fields={"person.fullName": "张三"},
+        keep_browser_open=True,
+    )
+
+    try:
+        result = await worker.run(
+            request,
+            lambda _progress: _completed_awaitable(),
+        )
+
+        assert result.status is BrowserJobStatus.COMPLETED
+        assert result.browser_session_open is True
+        assert request.job_id in worker._sessions
+    finally:
+        await worker.cancel(request.job_id)
+
+    assert request.job_id not in worker._sessions
+
+
+@pytest.mark.asyncio
 async def test_observer_collects_accessibility_trees_across_iframe_and_shadow_dom(
     target_server: str,
 ) -> None:

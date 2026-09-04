@@ -698,9 +698,7 @@ class PlaywrightBrowserWorker:
         except Exception:
             await self.cancel(request.job_id)
             raise
-        if result.status is not BrowserJobStatus.NEED_HUMAN:
-            await self.cancel(request.job_id)
-        return result
+        return await self._finalize_session(request.job_id, session, result)
 
     async def resume(
         self,
@@ -717,6 +715,24 @@ class PlaywrightBrowserWorker:
         except Exception:
             await self.cancel(job_id)
             raise
+        return await self._finalize_session(job_id, session, result)
+
+    async def _finalize_session(
+        self,
+        job_id: str,
+        session: _BrowserSession,
+        result: BrowserRunResult,
+    ) -> BrowserRunResult:
+        if (
+            result.status is BrowserJobStatus.COMPLETED
+            and session.request.keep_browser_open
+        ):
+            return result.model_copy(
+                update={
+                    "message": f"{result.message}; 目标浏览器保持打开, 可检查后手动关闭",
+                    "browser_session_open": True,
+                }
+            )
         if result.status is not BrowserJobStatus.NEED_HUMAN:
             await self.cancel(job_id)
         return result

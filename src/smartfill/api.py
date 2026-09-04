@@ -637,6 +637,20 @@ def create_app(
                 detail=str(error),
             ) from error
 
+    @app.post(
+        "/api/v1/browser/jobs/{job_id}/browser/close",
+        response_model=BrowserJob,
+    )
+    async def close_browser_job(job_id: str) -> BrowserJob:
+        _get_job_or_404(browser_jobs, job_id)
+        try:
+            return await browser_jobs.close_browser(job_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
+
     @app.get("/api/v1/browser/jobs/{job_id}/screenshot")
     def get_browser_job_screenshot(job_id: str) -> FileResponse:
         _get_job_or_404(browser_jobs, job_id)

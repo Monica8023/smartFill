@@ -75,22 +75,24 @@ describe('HttpSmartFillClient', () => {
       field_mappings: { 'person.fullName': 'sf-job-0' },
     })
     await client.cancelBrowserJob('job-1')
+    await client.closeBrowserJob('job-1')
     await client.listJobs()
     await client.getJob('job-1')
     await client.getTargetOrigins()
     await client.replaceTargetOrigins(['https://target.example.com'])
 
-    expect(fetchMock).toHaveBeenCalledTimes(10)
+    expect(fetchMock).toHaveBeenCalledTimes(11)
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: 'POST',
       headers: { Authorization: 'Bearer local-token', 'Content-Type': 'application/json' },
     })
     expect(fetchMock.mock.calls[4][0]).toBe('/api/v1/browser/jobs/job-1/resolve')
     expect(fetchMock.mock.calls[5][0]).toBe('/api/v1/browser/jobs/job-1/cancel')
-    expect(fetchMock.mock.calls[6][0]).toBe('/api/v1/browser/jobs')
-    expect(fetchMock.mock.calls[7][0]).toBe('/api/v1/browser/jobs/job-1')
-    expect(fetchMock.mock.calls[8][0]).toBe('/api/v1/settings/target-origins')
-    expect(fetchMock.mock.calls[9][1]).toMatchObject({
+    expect(fetchMock.mock.calls[6][0]).toBe('/api/v1/browser/jobs/job-1/browser/close')
+    expect(fetchMock.mock.calls[7][0]).toBe('/api/v1/browser/jobs')
+    expect(fetchMock.mock.calls[8][0]).toBe('/api/v1/browser/jobs/job-1')
+    expect(fetchMock.mock.calls[9][0]).toBe('/api/v1/settings/target-origins')
+    expect(fetchMock.mock.calls[10][1]).toMatchObject({
       method: 'PUT',
       body: JSON.stringify({ origins: ['https://target.example.com'] }),
     })

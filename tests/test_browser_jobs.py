@@ -67,6 +67,22 @@ class RecordingWorker:
         self.cancelled_job_id = job_id
 
 
+class RetainedSessionWorker(RecordingWorker):
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        self.request = request
+        return BrowserRunResult(
+            status=BrowserJobStatus.COMPLETED,
+            message="填写完成, 浏览器保持打开",
+            current_url=request.target_url,
+            completed_fields=len(request.fields),
+            browser_session_open=True,
+        )
+
+
 class HumanWorker(RecordingWorker):
     async def run(
         self,
@@ -373,6 +389,32 @@ async def test_job_manager_publishes_progress_and_terminal_state() -> None:
     assert BrowserJobStatus.FILLING in statuses
     assert statuses[-1] is BrowserJobStatus.COMPLETED
     assert manager.get(job.id).completed_fields == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_job_keeps_browser_open_until_operator_closes_it() -> None:
+    worker = RetainedSessionWorker()
+    manager = BrowserJobManager(worker=worker, secret_store=InMemorySecretStore())
+    job = manager.create(
+        BrowserJobCreate(
+            task_id="task-retained",
+            target_url="https://target.example.com/profile",
+            fields={"person.fullName": "张三"},
+            keep_browser_open=True,
+        )
+    )
+
+    await manager.run(job.id)
+
+    completed = manager.get(job.id)
+    assert completed.status is BrowserJobStatus.COMPLETED
+    assert completed.browser_session_open is True
+
+    closed = await manager.close_browser(job.id)
+    assert closed.status is BrowserJobStatus.COMPLETED
+    assert closed.browser_session_open is False
+    assert "浏览器已由操作员关闭" in closed.message
+    assert worker.cancelled_job_id == job.id
 
 
 @pytest.mark.asyncio

@@ -123,6 +123,27 @@ class FailingApiWorker(ApiFakeWorker):
         raise RuntimeError("synthetic API worker failure")
 
 
+class RetainedApiWorker(ApiFakeWorker):
+    def __init__(self) -> None:
+        self.closed_job_id: str | None = None
+
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        return BrowserRunResult(
+            status=BrowserJobStatus.COMPLETED,
+            message="完成, 浏览器保持打开",
+            current_url=request.target_url,
+            completed_fields=len(request.fields),
+            browser_session_open=True,
+        )
+
+    async def cancel(self, job_id: str) -> None:
+        self.closed_job_id = job_id
+
+
 def make_client(
     *,
     api_token: str | None = None,
@@ -418,6 +439,46 @@ def test_browser_job_api_runs_and_never_returns_plaintext_sensitive_values() -> 
     assert job.json()["completed_fields"] == 3
     assert "P@ssw0rd!" not in job.text
     assert "110101199001011234" not in job.text
+
+
+def test_operator_can_close_a_browser_after_the_job_completes() -> None:
+    worker = RetainedApiWorker()
+    with make_client(browser_worker=worker) as client:
+        task = client.post(
+            "/api/v1/tasks",
+            json={
+                "name": "保留浏览器",
+                "target_origin": "https://target.example.com",
+                "record_count": 1,
+            },
+        ).json()
+        client.post(f"/api/v1/tasks/{task['id']}/validate")
+        client.post(f"/api/v1/tasks/{task['id']}/start")
+        created = client.post(
+            "/api/v1/browser/jobs",
+            json={
+                "task_id": task["id"],
+                "target_url": "https://target.example.com/profile",
+                "fields": {"person.fullName": "张三"},
+                "keep_browser_open": True,
+            },
+        ).json()
+        current = created
+        for _ in range(100):
+            current = client.get(f"/api/v1/browser/jobs/{created['id']}").json()
+            if current["status"] == "completed":
+                break
+            time.sleep(0.01)
+
+        response = client.post(
+            f"/api/v1/browser/jobs/{created['id']}/browser/close"
+        )
+
+    assert current["browser_session_open"] is True
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["browser_session_open"] is False
+    assert worker.closed_job_id == created["id"]
 
 
 def test_browser_job_failure_updates_task_and_exposes_diagnostic_download() -> None:
