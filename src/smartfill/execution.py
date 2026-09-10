@@ -36,6 +36,8 @@ class ActionProposal(BaseModel):
     option: str | None = None
     checked: bool | None = None
     confidence: float = Field(ge=0, le=1)
+    evidence: str | None = Field(default=None, max_length=500)
+    accessible_name: str | None = Field(default=None, max_length=300)
 
 
 class PolicyDecision(BaseModel):

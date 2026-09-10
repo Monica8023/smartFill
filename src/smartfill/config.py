@@ -16,7 +16,9 @@ def normalize_origin(value: str) -> str:
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("A valid HTTP(S) origin is required")
-    port = f":{parsed.port}" if parsed.port else ""
+    parsed_port = parsed.port
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    port = f":{parsed_port}" if parsed_port and parsed_port != default_port else ""
     return f"{parsed.scheme.lower()}://{parsed.hostname.lower()}{port}"
 
 
@@ -43,10 +45,12 @@ class Settings(BaseSettings):
     dashscope_fast_model: str = "qwen3-vl-flash"
     dashscope_strong_model: str = "qwen3-vl-plus"
     browser_headless: bool = True
+    browser_relaxed_manual_navigation: bool = True
     browser_cdp_url: str | None = None
     browser_artifacts_root: Path = Path("artifacts")
     browser_navigation_timeout_ms: int = Field(default=30_000, ge=1_000, le=180_000)
     browser_action_timeout_ms: int = Field(default=10_000, ge=500, le=60_000)
+    browser_screenshot_timeout_ms: int = Field(default=10_000, ge=500, le=120_000)
 
     @field_validator("allowed_target_origins", "cors_origins")
     @classmethod

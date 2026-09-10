@@ -290,6 +290,20 @@ class BatchManager:
                     field_definitions=definitions,
                     entry_action=EntryActionConfig.model_validate(raw_step["entry_action"]),
                     submission=SubmissionConfig.model_validate(raw_step["submission"]),
+                    target_intent=raw_step.get("target_intent", ""),
+                    authentication_mode=raw_step.get("authentication_mode", "none"),
+                    observation_interval_seconds=raw_step.get(
+                        "observation_interval_seconds",
+                        5,
+                    ),
+                    authentication_session_key=raw_step.get(
+                        "authentication_session_key"
+                    ),
+                    heartbeat_url=raw_step.get("heartbeat_url"),
+                    heartbeat_interval_seconds=raw_step.get(
+                        "heartbeat_interval_seconds",
+                        300,
+                    ),
                 )
             )
         return BrowserJobCreate(

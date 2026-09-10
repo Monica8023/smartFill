@@ -71,9 +71,7 @@ describe('HttpSmartFillClient', () => {
       target_url: `${task.target_origin}/demo/target`,
       fields: { 'person.fullName': '张三' },
     })
-    await client.resolveBrowserJob('job-1', {
-      field_mappings: { 'person.fullName': 'sf-job-0' },
-    })
+    await client.resolveBrowserJob('job-1', {})
     await client.cancelBrowserJob('job-1')
     await client.closeBrowserJob('job-1')
     await client.listJobs()
@@ -113,29 +111,6 @@ describe('HttpSmartFillClient', () => {
     expect(onUpdate).toHaveBeenCalledWith(job)
     disconnect()
     expect(socket.closed).toBe(true)
-  })
-
-  it('posts semantic page scan configuration to the browser scanner', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({
-      initial_url: `${task.target_origin}/`,
-      final_url: `${task.target_origin}/login`,
-      entry_action_performed: true,
-      fields: [],
-    }))
-    const client = new HttpSmartFillClient(() => 'scan-token')
-
-    await client.scanPage({
-      target_url: `${task.target_origin}/`,
-      entry_action: { mode: 'click', aliases: ['登录', 'Login'] },
-    })
-
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/browser/page-scan', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({
-        target_url: `${task.target_origin}/`,
-        entry_action: { mode: 'click', aliases: ['登录', 'Login'] },
-      }),
-    }))
   })
 
   it('uploads imports and batches as authenticated multipart requests', async () => {

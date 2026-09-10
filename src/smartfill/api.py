@@ -49,8 +49,6 @@ from smartfill.browser_jobs import (
     BrowserJobRepository,
     BrowserJobStatus,
     HumanResolution,
-    PageScanRequest,
-    PageScanResult,
 )
 from smartfill.browser_worker import PlaywrightBrowserWorker
 from smartfill.config import Settings, normalize_origin
@@ -86,6 +84,7 @@ from smartfill.tasks import (
     TaskRepository,
     TaskService,
 )
+from smartfill.vision import AliyunVisionProvider
 
 logger = logging.getLogger(__name__)
 
@@ -180,16 +179,30 @@ def create_app(
         settings_repository = SqlAlchemySystemSettingsRepository(engine)
     task_service = TaskService(task_repository)
     target_origins = TargetOriginService(settings_repository, configured_origins)
-    worker = browser_worker or PlaywrightBrowserWorker(
-        secret_store=secret_store,
-        allowed_origins=target_origins.origins(),
-        allowed_origins_provider=target_origins.origins,
-        artifacts_root=runtime.browser_artifacts_root.resolve(),
-        headless=runtime.browser_headless,
-        cdp_url=runtime.browser_cdp_url,
-        navigation_timeout_ms=runtime.browser_navigation_timeout_ms,
-        action_timeout_ms=runtime.browser_action_timeout_ms,
-    )
+    worker = browser_worker
+    if worker is None:
+        vision_provider = (
+            AliyunVisionProvider(
+                api_key=runtime.dashscope_api_key.get_secret_value(),
+                model=runtime.dashscope_fast_model,
+                base_url=runtime.dashscope_base_url,
+            )
+            if runtime.dashscope_api_key is not None
+            else None
+        )
+        worker = PlaywrightBrowserWorker(
+            secret_store=secret_store,
+            allowed_origins=target_origins.origins(),
+            allowed_origins_provider=target_origins.origins,
+            artifacts_root=runtime.browser_artifacts_root.resolve(),
+            headless=runtime.browser_headless,
+            relaxed_manual_navigation=runtime.browser_relaxed_manual_navigation,
+            cdp_url=runtime.browser_cdp_url,
+            navigation_timeout_ms=runtime.browser_navigation_timeout_ms,
+            action_timeout_ms=runtime.browser_action_timeout_ms,
+            screenshot_timeout_ms=runtime.browser_screenshot_timeout_ms,
+            vision_provider=vision_provider,
+        )
     browser_jobs = BrowserJobManager(
         worker=worker,
         secret_store=secret_store,
@@ -542,29 +555,6 @@ def create_app(
             ) from error
 
     @app.post(
-        "/api/v1/browser/page-scan",
-        response_model=PageScanResult,
-    )
-    async def scan_browser_page(payload: PageScanRequest) -> PageScanResult:
-        if not target_origins.contains(payload.target_url):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Target origin is not approved",
-            )
-        try:
-            return await worker.scan_page(payload)
-        except ValueError as error:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=str(error),
-            ) from error
-        except Exception as error:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Page scan failed in Browser Worker",
-            ) from error
-
-    @app.post(
         "/api/v1/browser/jobs",
         response_model=BrowserJob,
         status_code=status.HTTP_202_ACCEPTED,
@@ -590,8 +580,12 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Task must be running before browser execution",
             )
-        job = browser_jobs.create(payload, task_name=task.name)
-        browser_jobs.start(job.id)
+        job, created = browser_jobs.create_or_reuse_active(
+            payload,
+            task_name=task.name,
+        )
+        if created:
+            browser_jobs.start(job.id)
         return job
 
     @app.get("/api/v1/browser/jobs", response_model=list[BrowserJob])
@@ -681,6 +675,39 @@ def create_app(
             diagnostic_path,
             media_type="text/plain; charset=utf-8",
             filename=Path(diagnostic_path).name,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/v1/browser/jobs/{job_id}/downloads/{index}")
+    def get_browser_job_download(job_id: str, index: int) -> FileResponse:
+        _get_job_or_404(browser_jobs, job_id)
+        try:
+            download_path = browser_jobs.get_download_path(job_id, index)
+        except FileNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Downloaded document is not available",
+            ) from error
+        return FileResponse(
+            download_path,
+            filename=Path(download_path).name,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/v1/browser/jobs/{job_id}/statistics")
+    def get_browser_job_statistics(job_id: str) -> FileResponse:
+        _get_job_or_404(browser_jobs, job_id)
+        try:
+            statistics_path = browser_jobs.get_statistics_path(job_id)
+        except FileNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Execution statistics are not available",
+            ) from error
+        return FileResponse(
+            statistics_path,
+            media_type="text/plain; charset=utf-8",
+            filename=Path(statistics_path).name,
             headers={"Cache-Control": "no-store"},
         )
 

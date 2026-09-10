@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from smartfill.browser_jobs import (
+    AuthenticationMode,
     BrowserJobCreate,
     BrowserJobManager,
     BrowserJobStatus,
@@ -11,12 +12,13 @@ from smartfill.browser_jobs import (
     BrowserRunResult,
     EntryActionConfig,
     EntryActionMode,
-    FieldCandidateSet,
+    ExecutionStatistics,
     HumanIntervention,
     HumanResolution,
     InterventionCandidate,
     InterventionKind,
     JobProgress,
+    RequiredDataField,
     SubmissionConfig,
     SubmissionPolicy,
     WorkflowStep,
@@ -83,6 +85,27 @@ class RetainedSessionWorker(RecordingWorker):
         )
 
 
+class StatisticsWorker(RecordingWorker):
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        return BrowserRunResult(
+            status=BrowserJobStatus.COMPLETED,
+            message="目标入口已找到",
+            current_url=request.target_url,
+            statistics=ExecutionStatistics(
+                duration_ms=12_345,
+                screenshot_count=4,
+                model_call_count=4,
+                model_latency_ms=3_210,
+                browser_action_count=3,
+                click_count=3,
+            ),
+        )
+
+
 class HumanWorker(RecordingWorker):
     async def run(
         self,
@@ -92,26 +115,82 @@ class HumanWorker(RecordingWorker):
         self.request = request
         return BrowserRunResult(
             status=BrowserJobStatus.NEED_HUMAN,
-            message="字段需要确认",
+            message="页面需要人工处理",
             intervention=HumanIntervention(
-                kind=InterventionKind.FIELD_MAPPING,
-                instruction="选择姓名字段",
-                field_candidates=[
-                    FieldCandidateSet(
-                        canonical_field="person.fullName",
-                        candidates=[
-                            InterventionCandidate(
-                                element_id="sf-job-0",
-                                accessible_name="姓名",
-                                role="textbox",
-                                tag="input",
-                                frame_path="main",
-                            )
-                        ],
+                kind=InterventionKind.VISUAL_REVIEW,
+                instruction="处理页面状态后继续视觉识别",
+                requires_browser_interaction=True,
+            ),
+        )
+
+
+class MissingDataWorker(RecordingWorker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.resolution: HumanResolution | None = None
+
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        self.request = request
+        return BrowserRunResult(
+            status=BrowserJobStatus.NEED_HUMAN,
+            message="缺少房产证号",
+            intervention=HumanIntervention(
+                kind=InterventionKind.DATA_REQUIRED,
+                instruction="请补充目标表单所需资料",
+                missing_fields=[
+                    RequiredDataField(
+                        key="property.certificateNumber",
+                        display_name="房产证号",
+                        sensitive=True,
+                        reason="目标表单必填",
                     )
                 ],
             ),
         )
+
+    async def resume(
+        self,
+        job_id: str,
+        resolution: HumanResolution,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        self.resolution = resolution
+        return await super().resume(job_id, resolution, report)
+
+
+class ManualLoginWorker(RecordingWorker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.resolution: HumanResolution | None = None
+
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        self.request = request
+        return BrowserRunResult(
+            status=BrowserJobStatus.NEED_HUMAN,
+            message="等待人工登录",
+            intervention=HumanIntervention(
+                kind=InterventionKind.MANUAL_LOGIN,
+                instruction="请完成短信验证后继续",
+                requires_browser_interaction=True,
+            ),
+        )
+
+    async def resume(
+        self,
+        job_id: str,
+        resolution: HumanResolution,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        self.resolution = resolution
+        return await super().resume(job_id, resolution, report)
 
 
 class SubmissionConfirmationWorker(RecordingWorker):
@@ -418,6 +497,38 @@ async def test_completed_job_keeps_browser_open_until_operator_closes_it() -> No
 
 
 @pytest.mark.asyncio
+async def test_completed_job_persists_readable_execution_statistics_log(
+    tmp_path: Path,
+) -> None:
+    manager = BrowserJobManager(
+        worker=StatisticsWorker(),
+        secret_store=InMemorySecretStore(),
+        artifacts_root=tmp_path,
+    )
+    job = manager.create(
+        BrowserJobCreate(
+            task_id="task-statistics",
+            target_url="https://target.example.com/portal",
+            target_intent="找到社保卡应用状态查询入口并点击",
+        )
+    )
+
+    await manager.run(job.id)
+
+    completed = manager.get(job.id)
+    assert completed.statistics is not None
+    assert completed.statistics.screenshot_count == 4
+    assert completed.statistics.click_count == 3
+    assert completed.statistics_url == f"/api/v1/browser/jobs/{job.id}/statistics"
+    statistics_log = Path(manager.get_statistics_path(job.id)).read_text(encoding="utf-8")
+    assert "duration_ms: 12345" in statistics_log
+    assert "screenshot_count: 4" in statistics_log
+    assert "model_call_count: 4" in statistics_log
+    assert "click_count: 3" in statistics_log
+    assert "status: completed" in statistics_log
+
+
+@pytest.mark.asyncio
 async def test_job_manager_persists_a_downloadable_diagnostic_and_notifies_failure(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -567,7 +678,7 @@ def test_workflow_job_contains_ordered_steps_and_redacted_configuration_snapshot
 
 
 @pytest.mark.asyncio
-async def test_job_manager_validates_human_mapping_and_resumes_job() -> None:
+async def test_job_manager_resumes_visual_review_without_dom_mapping() -> None:
     manager = BrowserJobManager(worker=HumanWorker(), secret_store=InMemorySecretStore())
     job = manager.create(
         BrowserJobCreate(
@@ -578,16 +689,7 @@ async def test_job_manager_validates_human_mapping_and_resumes_job() -> None:
     )
     await manager.run(job.id)
 
-    with pytest.raises(ValueError, match="candidate"):
-        await manager.resolve(
-            job.id,
-            HumanResolution(field_mappings={"person.fullName": "user-css-selector"}),
-        )
-
-    resumed = await manager.resolve(
-        job.id,
-        HumanResolution(field_mappings={"person.fullName": "sf-job-0"}),
-    )
+    resumed = await manager.resolve(job.id, HumanResolution())
     await manager.wait(job.id)
 
     assert resumed.status is BrowserJobStatus.RESUMING
@@ -696,3 +798,166 @@ async def test_entry_confirmation_accepts_only_current_observed_candidate() -> N
     assert completed.status is BrowserJobStatus.COMPLETED
     assert completed.entry_action_performed is True
     assert completed.entry_action_mode is EntryActionMode.CLICK
+
+
+def test_goal_driven_job_accepts_empty_initial_profile_and_snapshots_identity_mode() -> None:
+    manager = BrowserJobManager(worker=RecordingWorker(), secret_store=InMemorySecretStore())
+
+    job = manager.create(
+        BrowserJobCreate(
+            task_id="task-property",
+            target_url="https://target.example.com/portal",
+            fields={},
+            target_intent="找到填写房产认证信息的入口并填写资料",
+            authentication_mode=AuthenticationMode.LOGIN,
+            observation_interval_seconds=5,
+        )
+    )
+
+    request = manager._get_request(job.id)
+    assert request.target_intent == "找到填写房产认证信息的入口并填写资料"
+    assert request.authentication_mode is AuthenticationMode.LOGIN
+    assert request.observation_interval_seconds == 5
+    assert job.configuration_snapshot["steps"][0]["authentication_mode"] == "login"
+    assert job.configuration_snapshot["steps"][0]["target_intent"] == request.target_intent
+
+
+def test_manual_login_session_requires_safe_same_origin_heartbeat() -> None:
+    with pytest.raises(ValueError, match="session key and heartbeat URL"):
+        BrowserJobCreate(
+            task_id="task-manual",
+            target_url="https://target.example.com/portal",
+            target_intent="填写房产认证资料",
+            authentication_mode=AuthenticationMode.MANUAL,
+        )
+
+    with pytest.raises(ValueError, match="same origin"):
+        BrowserJobCreate(
+            task_id="task-manual",
+            target_url="https://target.example.com/portal",
+            target_intent="填写房产认证资料",
+            authentication_mode=AuthenticationMode.MANUAL,
+            authentication_session_key="property-account",
+            heartbeat_url="https://other.example.com/session/ping",
+        )
+
+    with pytest.raises(ValueError, match="query or fragment"):
+        BrowserJobCreate(
+            task_id="task-manual",
+            target_url="https://target.example.com/portal",
+            target_intent="填写房产认证资料",
+            authentication_mode=AuthenticationMode.MANUAL,
+            authentication_session_key="property-account",
+            heartbeat_url="https://target.example.com/session/ping?token=unsafe",
+        )
+
+    payload = BrowserJobCreate(
+        task_id="task-manual",
+        target_url="https://target.example.com:443/portal",
+        target_intent="填写房产认证资料",
+        authentication_mode=AuthenticationMode.MANUAL,
+        authentication_session_key="property-account",
+        heartbeat_url="https://target.example.com/session/ping",
+        heartbeat_interval_seconds=300,
+    )
+
+    assert payload.authentication_session_key == "property-account"
+    assert payload.heartbeat_interval_seconds == 300
+
+
+@pytest.mark.asyncio
+async def test_manual_login_requires_confirmation_and_snapshots_reuse_config() -> None:
+    worker = ManualLoginWorker()
+    manager = BrowserJobManager(worker=worker, secret_store=InMemorySecretStore())
+    job = manager.create(
+        BrowserJobCreate(
+            task_id="task-manual",
+            target_url="https://target.example.com/portal",
+            target_intent="进入房产认证",
+            authentication_mode=AuthenticationMode.MANUAL,
+            authentication_session_key="property-account",
+            heartbeat_url="https://target.example.com/session/ping",
+            heartbeat_interval_seconds=300,
+        )
+    )
+    await manager.run(job.id)
+
+    with pytest.raises(ValueError, match="explicit completion"):
+        await manager.resolve(job.id, HumanResolution())
+    await manager.resolve(job.id, HumanResolution(manual_login_completed=True))
+    await manager.wait(job.id)
+
+    assert worker.resolution == HumanResolution(manual_login_completed=True)
+    step = job.configuration_snapshot["steps"][0]
+    assert step["authentication_session_key"] == "property-account"
+    assert step["heartbeat_url"] == "https://target.example.com/session/ping"
+    assert step["heartbeat_interval_seconds"] == 300
+
+
+@pytest.mark.asyncio
+async def test_duplicate_manual_login_launch_reuses_active_same_origin_job() -> None:
+    manager = BrowserJobManager(
+        worker=ManualLoginWorker(),
+        secret_store=InMemorySecretStore(),
+    )
+    first_payload = BrowserJobCreate(
+        task_id="task-manual-1",
+        target_url="https://target.example.com/portal",
+        target_intent="进入房产认证",
+        authentication_mode=AuthenticationMode.MANUAL,
+        authentication_session_key="property-account",
+        heartbeat_url="https://target.example.com/session/ping",
+    )
+    first, first_created = manager.create_or_reuse_active(first_payload)
+    await manager.run(first.id)
+
+    duplicate, duplicate_created = manager.create_or_reuse_active(
+        first_payload.model_copy(update={"task_id": "task-manual-2"})
+    )
+    other_origin, other_origin_created = manager.create_or_reuse_active(
+        first_payload.model_copy(
+            update={
+                "task_id": "task-manual-3",
+                "target_url": "https://other.example.com/portal",
+                "heartbeat_url": "https://other.example.com/session/ping",
+            }
+        )
+    )
+
+    assert first_created is True
+    assert duplicate_created is False
+    assert duplicate.id == first.id
+    assert duplicate.status is BrowserJobStatus.NEED_HUMAN
+    assert other_origin_created is True
+    assert other_origin.id != first.id
+
+
+@pytest.mark.asyncio
+async def test_missing_customer_data_is_protected_and_resumes_same_job() -> None:
+    store = InMemorySecretStore()
+    worker = MissingDataWorker()
+    manager = BrowserJobManager(worker=worker, secret_store=store)
+    job = manager.create(
+        BrowserJobCreate(
+            task_id="task-property",
+            target_url="https://target.example.com/portal",
+            fields={},
+            target_intent="填写房产认证资料",
+        )
+    )
+    await manager.run(job.id)
+
+    with pytest.raises(ValueError, match="Every missing field"):
+        await manager.resolve(job.id, HumanResolution())
+    await manager.resolve(
+        job.id,
+        HumanResolution(
+            field_values={"property.certificateNumber": "沪房权证123456"}
+        ),
+    )
+    await manager.wait(job.id)
+
+    assert worker.resolution is not None
+    protected = worker.resolution.field_values["property.certificateNumber"]
+    assert protected.startswith("secret://")
+    assert store.resolve(protected) == "沪房权证123456"

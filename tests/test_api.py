@@ -1,5 +1,6 @@
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -9,44 +10,16 @@ from smartfill.browser_jobs import (
     BrowserJobStatus,
     BrowserRunRequest,
     BrowserRunResult,
-    EntryActionMode,
-    FieldCandidateSet,
+    ExecutionStatistics,
     HumanIntervention,
     HumanResolution,
-    InterventionCandidate,
     InterventionKind,
     JobProgress,
-    PageScanRequest,
-    PageScanResult,
 )
 from smartfill.config import Settings
-from smartfill.field_schema import FieldDefinition, FieldInputKind
 
 
 class ApiFakeWorker:
-    async def scan_page(self, request: PageScanRequest) -> PageScanResult:
-        return PageScanResult(
-            initial_url=request.target_url,
-            final_url="https://target.example.com/login",
-            entry_action_performed=request.entry_action.mode is EntryActionMode.CLICK,
-            fields=[
-                FieldDefinition(
-                    key="account.username",
-                    display_name="用户名",
-                    aliases=["账号", "username"],
-                    autocomplete_hints=["username"],
-                ),
-                FieldDefinition(
-                    key="account.password",
-                    display_name="密码",
-                    aliases=["密码", "password"],
-                    input_kind=FieldInputKind.PASSWORD,
-                    sensitive=True,
-                    autocomplete_hints=["current-password"],
-                ),
-            ],
-        )
-
     async def run(
         self,
         request: BrowserRunRequest,
@@ -90,27 +63,51 @@ class HumanApiWorker(ApiFakeWorker):
     ) -> BrowserRunResult:
         return BrowserRunResult(
             status=BrowserJobStatus.NEED_HUMAN,
-            message="请选择姓名控件",
+            message="页面需要人工处理",
             current_url=request.target_url,
             intervention=HumanIntervention(
-                kind=InterventionKind.FIELD_MAPPING,
-                instruction="选择姓名控件",
-                field_candidates=[
-                    FieldCandidateSet(
-                        canonical_field="person.fullName",
-                        candidates=[
-                            InterventionCandidate(
-                                element_id="sf-api-0",
-                                accessible_name="姓名",
-                                role="textbox",
-                                tag="input",
-                                frame_path="main/profile-frame",
-                                confidence=0.92,
-                            )
-                        ],
-                    )
-                ],
+                kind=InterventionKind.VISUAL_REVIEW,
+                instruction="处理页面状态后继续视觉识别",
+                requires_browser_interaction=True,
             ),
+        )
+
+
+class StatisticsApiWorker(ApiFakeWorker):
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        return BrowserRunResult(
+            status=BrowserJobStatus.COMPLETED,
+            message="目标入口已找到",
+            current_url=request.target_url,
+            statistics=ExecutionStatistics(
+                duration_ms=1_500,
+                screenshot_count=2,
+                model_call_count=2,
+                model_latency_ms=900,
+                browser_action_count=1,
+                click_count=1,
+            ),
+        )
+
+
+class DownloadApiWorker(ApiFakeWorker):
+    def __init__(self, download_path: Path) -> None:
+        self.download_path = download_path
+
+    async def run(
+        self,
+        request: BrowserRunRequest,
+        report: Callable[[JobProgress], Awaitable[None]],
+    ) -> BrowserRunResult:
+        return BrowserRunResult(
+            status=BrowserJobStatus.COMPLETED,
+            message="文档下载完成",
+            current_url=request.target_url,
+            download_paths=[str(self.download_path)],
         )
 
 
@@ -148,12 +145,14 @@ def make_client(
     *,
     api_token: str | None = None,
     browser_worker: BrowserAutomationWorker | None = None,
+    artifacts_root: Path | None = None,
 ) -> TestClient:
     settings = Settings(
         _env_file=None,
         environment="development",
         api_token=api_token,
         allowed_target_origins=["https://target.example.com"],
+        browser_artifacts_root=artifacts_root or Path("artifacts"),
     )
     return TestClient(create_app(settings, browser_worker=browser_worker or ApiFakeWorker()))
 
@@ -441,6 +440,51 @@ def test_browser_job_api_runs_and_never_returns_plaintext_sensitive_values() -> 
     assert "110101199001011234" not in job.text
 
 
+def test_browser_job_api_returns_active_manual_login_job_for_duplicate_launch() -> None:
+    with make_client(browser_worker=HumanApiWorker()) as client:
+        task_ids: list[str] = []
+        for suffix in ("1", "2"):
+            task = client.post(
+                "/api/v1/tasks",
+                json={
+                    "name": f"人工登录任务 {suffix}",
+                    "target_origin": "https://target.example.com",
+                    "record_count": 1,
+                },
+            ).json()
+            client.post(f"/api/v1/tasks/{task['id']}/validate")
+            client.post(f"/api/v1/tasks/{task['id']}/start")
+            task_ids.append(task["id"])
+
+        payload = {
+            "target_url": "https://target.example.com/portal",
+            "fields": {},
+            "target_intent": "等待用户登录",
+            "authentication_mode": "manual",
+            "authentication_session_key": "property-account",
+            "heartbeat_url": "https://target.example.com/session/ping",
+        }
+        first = client.post(
+            "/api/v1/browser/jobs",
+            json={**payload, "task_id": task_ids[0]},
+        ).json()
+        for _ in range(100):
+            current = client.get(f"/api/v1/browser/jobs/{first['id']}").json()
+            if current["status"] == "need_human":
+                break
+            time.sleep(0.01)
+
+        duplicate_response = client.post(
+            "/api/v1/browser/jobs",
+            json={**payload, "task_id": task_ids[1]},
+        )
+
+    assert duplicate_response.status_code == 202
+    assert duplicate_response.json()["id"] == first["id"]
+    assert duplicate_response.json()["status"] == "need_human"
+    assert duplicate_response.json()["diagnostic_id"] is None
+
+
 def test_operator_can_close_a_browser_after_the_job_completes() -> None:
     worker = RetainedApiWorker()
     with make_client(browser_worker=worker) as client:
@@ -520,6 +564,87 @@ def test_browser_job_failure_updates_task_and_exposes_diagnostic_download() -> N
     assert "RuntimeError: synthetic API worker failure" in diagnostic.text
 
 
+def test_completed_browser_job_exposes_execution_statistics_log(tmp_path: Path) -> None:
+    with make_client(
+        browser_worker=StatisticsApiWorker(),
+        artifacts_root=tmp_path,
+    ) as client:
+        task = client.post(
+            "/api/v1/tasks",
+            json={
+                "name": "入口定位统计",
+                "target_origin": "https://target.example.com",
+                "record_count": 1,
+            },
+        ).json()
+        client.post(f"/api/v1/tasks/{task['id']}/validate")
+        client.post(f"/api/v1/tasks/{task['id']}/start")
+        created = client.post(
+            "/api/v1/browser/jobs",
+            json={
+                "task_id": task["id"],
+                "target_url": "https://target.example.com/portal",
+                "fields": {},
+                "target_intent": "找到社保卡应用状态查询入口并点击",
+            },
+        ).json()
+        current = created
+        for _ in range(100):
+            current = client.get(f"/api/v1/browser/jobs/{created['id']}").json()
+            if current["status"] == "completed":
+                break
+            time.sleep(0.01)
+
+        statistics = client.get(current["statistics_url"])
+
+    assert current["statistics"]["duration_ms"] == 1_500
+    assert current["statistics"]["screenshot_count"] == 2
+    assert statistics.status_code == 200
+    assert "model_call_count: 2" in statistics.text
+    assert "browser_action_count: 1" in statistics.text
+
+
+def test_completed_browser_job_exposes_downloaded_document(tmp_path: Path) -> None:
+    download = tmp_path / "jobs" / "worker" / "downloads" / "guide.txt"
+    download.parent.mkdir(parents=True)
+    download.write_text("guide content", encoding="utf-8")
+    with make_client(
+        browser_worker=DownloadApiWorker(download),
+        artifacts_root=tmp_path,
+    ) as client:
+        task = client.post(
+            "/api/v1/tasks",
+            json={
+                "name": "下载办事指南",
+                "target_origin": "https://target.example.com",
+                "record_count": 1,
+            },
+        ).json()
+        client.post(f"/api/v1/tasks/{task['id']}/validate")
+        client.post(f"/api/v1/tasks/{task['id']}/start")
+        created = client.post(
+            "/api/v1/browser/jobs",
+            json={
+                "task_id": task["id"],
+                "target_url": "https://target.example.com/guide",
+                "fields": {},
+                "target_intent": "进入办事指南并下载文档",
+            },
+        ).json()
+        current = created
+        for _ in range(100):
+            current = client.get(f"/api/v1/browser/jobs/{created['id']}").json()
+            if current["status"] == "completed":
+                break
+            time.sleep(0.01)
+
+        downloaded = client.get(current["download_urls"][0])
+
+    assert downloaded.status_code == 200
+    assert downloaded.text == "guide content"
+    assert 'filename="guide.txt"' in downloaded.headers["content-disposition"]
+
+
 def test_browser_job_api_accepts_task_scoped_dynamic_field_schema() -> None:
     with make_client() as client:
         task = client.post(
@@ -563,60 +688,30 @@ def test_browser_job_api_accepts_task_scoped_dynamic_field_schema() -> None:
     assert "123-45-6789" not in response.text
 
 
-def test_page_scan_api_discovers_login_fields_after_clicking_login_entry() -> None:
+def test_legacy_page_scan_api_is_removed() -> None:
     with make_client() as client:
         response = client.post(
             "/api/v1/browser/page-scan",
-            json={
-                "target_url": "https://target.example.com/",
-                "entry_action": {
-                    "mode": "click",
-                    "aliases": ["登录", "Login"],
-                },
-            },
+            json={"target_url": "https://target.example.com/"},
         )
 
-    assert response.status_code == 200
-    result = response.json()
-    assert result["entry_action_performed"] is True
-    assert result["final_url"] == "https://target.example.com/login"
-    assert [field["key"] for field in result["fields"]] == [
-        "account.username",
-        "account.password",
-    ]
-    assert result["fields"][1]["sensitive"] is True
-
-
-def test_page_scan_api_rejects_unapproved_target_origin_before_worker_call() -> None:
-    with make_client() as client:
-        response = client.post(
-            "/api/v1/browser/page-scan",
-            json={"target_url": "https://unapproved.example.com/login"},
-        )
-
-    assert response.status_code == 403
-    assert response.json() == {"detail": "Target origin is not approved"}
+    assert response.status_code == 404
 
 
 def test_target_origin_settings_apply_immediately_without_restart() -> None:
     with make_client() as client:
-        before = client.post(
-            "/api/v1/browser/page-scan",
-            json={"target_url": "https://new-target.example.com/login"},
-        )
+        before = client.get("/api/v1/settings/target-origins")
         updated = client.put(
             "/api/v1/settings/target-origins",
             json={"origins": ["https://new-target.example.com"]},
         )
-        after = client.post(
-            "/api/v1/browser/page-scan",
-            json={"target_url": "https://new-target.example.com/login"},
-        )
+        after = client.get("/api/v1/settings/target-origins")
 
-    assert before.status_code == 403
+    assert before.status_code == 200
     assert updated.status_code == 200
     assert updated.json()["origins"] == ["https://new-target.example.com"]
     assert after.status_code == 200
+    assert after.json()["origins"] == ["https://new-target.example.com"]
 
 
 def test_browser_job_rejects_task_origin_mismatch() -> None:
@@ -681,7 +776,7 @@ def test_browser_job_websocket_authenticates_before_streaming_state() -> None:
     assert update["status"] == "completed"
 
 
-def test_human_confirmation_api_accepts_only_current_candidates_and_resumes() -> None:
+def test_visual_review_api_resumes_without_dom_mapping_payload() -> None:
     with make_client(browser_worker=HumanApiWorker()) as client:
         task = client.post(
             "/api/v1/tasks",
@@ -705,22 +800,22 @@ def test_human_confirmation_api_accepts_only_current_candidates_and_resumes() ->
 
         rejected = client.post(
             f"/api/v1/browser/jobs/{created['id']}/resolve",
-            json={"field_mappings": {"person.fullName": "css=input:nth-child(1)"}},
+            json={"field_mappings": {"person.fullName": "css=input"}},
         )
         accepted = client.post(
             f"/api/v1/browser/jobs/{created['id']}/resolve",
-            json={"field_mappings": {"person.fullName": "sf-api-0"}},
+            json={},
         )
         completed = client.get(f"/api/v1/browser/jobs/{created['id']}")
 
     assert waiting["status"] == "need_human"
-    assert waiting["intervention"]["field_candidates"][0]["candidates"][0] == {
-        "element_id": "sf-api-0",
-        "accessible_name": "姓名",
-        "role": "textbox",
-        "tag": "input",
-        "frame_path": "main/profile-frame",
-        "confidence": 0.92,
+    assert waiting["intervention"] == {
+        "kind": "visual_review",
+        "instruction": "处理页面状态后继续视觉识别",
+        "submission_candidates": [],
+        "entry_candidates": [],
+        "requires_browser_interaction": True,
+        "missing_fields": [],
     }
     assert rejected.status_code == 422
     assert accepted.status_code == 202

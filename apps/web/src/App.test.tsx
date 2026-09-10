@@ -34,6 +34,19 @@ function createClient(): SmartFillClient {
     entry_action_performed: false,
     browser_session_open: false,
     screenshot_url: null,
+    download_urls: ['/api/v1/browser/jobs/job-1/downloads/0'],
+    statistics: {
+      duration_ms: 12_345,
+      screenshot_count: 4,
+      model_call_count: 4,
+      model_latency_ms: 3_210,
+      browser_action_count: 3,
+      click_count: 3,
+      scroll_count: 0,
+      wait_count: 0,
+      fill_count: 0,
+    },
+    statistics_url: '/api/v1/browser/jobs/job-1/statistics',
     configuration_snapshot: {
       version: 1,
       steps: [{
@@ -69,31 +82,6 @@ function createClient(): SmartFillClient {
     completed_at: '2026-08-31T00:00:01Z',
   }
   return {
-    scanPage: vi.fn().mockResolvedValue({
-      initial_url: 'http://127.0.0.1:8000/demo/home',
-      final_url: 'http://127.0.0.1:8000/demo/login',
-      entry_action_performed: true,
-      fields: [
-        {
-          key: 'account.username',
-          display_name: '用户名',
-          aliases: ['账号', 'username'],
-          input_kind: 'text',
-          sensitive: false,
-          source_field: null,
-          autocomplete_hints: ['username'],
-        },
-        {
-          key: 'account.password',
-          display_name: '密码',
-          aliases: ['密码', 'password'],
-          input_kind: 'password',
-          sensitive: true,
-          source_field: null,
-          autocomplete_hints: ['current-password'],
-        },
-      ],
-    }),
     createTask: vi.fn().mockResolvedValue(task),
     validateTask: vi.fn().mockResolvedValue({ ...task, status: 'ready' }),
     startTask: vi.fn().mockResolvedValue({ ...task, status: 'running' }),
@@ -150,6 +138,32 @@ describe('SmartFill console', () => {
 
     await user.click(screen.getByRole('button', { name: /收起任务 登录后完善资料/ }))
     expect(screen.queryByText('配置快照')).not.toBeInTheDocument()
+  })
+
+  it('allows an executing job to be terminated from the task list', async () => {
+    const client = createClient()
+    const baseJob = await client.getJob('job-1')
+    const activeJob: BrowserJob = {
+      ...baseJob,
+      status: 'filling',
+      message: '正在填写字段',
+    }
+    vi.mocked(client.listJobs).mockResolvedValue([activeJob])
+    vi.mocked(client.cancelBrowserJob).mockResolvedValue({
+      ...activeJob,
+      status: 'cancelled',
+      message: '任务已由操作员终止, 浏览器会话已释放',
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.click(screen.getByRole('button', { name: '任务列表' }))
+    await user.click(await screen.findByRole('button', { name: '终止任务 登录后完善资料' }))
+
+    await waitFor(() => expect(client.cancelBrowserJob).toHaveBeenCalledWith('job-1'))
+    expect(await screen.findByText('已取消')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '终止任务 登录后完善资料' }))
+      .not.toBeInTheDocument()
   })
 
   it('reuses a task from history and backfills its multi-step console draft', async () => {
@@ -260,8 +274,8 @@ describe('SmartFill console', () => {
     expect(screen.getByLabelText('Category')).toHaveValue('Home')
     expect(screen.getByLabelText('Title')).toHaveValue('Reusable note')
     expect(screen.getByLabelText('Description')).toHaveValue('Backfilled description')
-    expect(screen.getByLabelText('进入表单方式')).toHaveValue('click')
-    expect(screen.getByLabelText('入口按钮别名')).toHaveValue('Add Note')
+    expect(screen.getByLabelText('进入表单方式')).toHaveValue('auto')
+    expect(screen.queryByLabelText('入口按钮别名')).not.toBeInTheDocument()
 
     await user.clear(screen.getByLabelText('Category'))
     await user.clear(screen.getByLabelText('Title'))
@@ -471,7 +485,7 @@ describe('SmartFill console', () => {
     setItem.mockRestore()
   })
 
-  it('adds and submits a custom semantic field definition without code changes', async () => {
+  it('adds a business field intent without configuring page aliases', async () => {
     const client = createClient()
     const user = userEvent.setup()
     render(<App client={client} />)
@@ -482,8 +496,6 @@ describe('SmartFill console', () => {
     await user.type(within(customGroup).getByLabelText('字段标识'), 'person.firstName')
     await user.clear(within(customGroup).getByLabelText('显示名称'))
     await user.type(within(customGroup).getByLabelText('显示名称'), '名')
-    await user.clear(within(customGroup).getByLabelText('页面别名'))
-    await user.type(within(customGroup).getByLabelText('页面别名'), 'First Name, Given Name, 名')
     await user.type(screen.getByLabelText('名'), 'San')
     await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
 
@@ -493,10 +505,30 @@ describe('SmartFill console', () => {
         expect.objectContaining({
           key: 'person.firstName',
           display_name: '名',
-          aliases: ['First Name', 'Given Name', '名'],
+          aliases: ['名', 'person.firstName'],
         }),
       ]),
     }))
+  })
+
+  it('configures business data sensitivity and source relationships only', async () => {
+    const user = userEvent.setup()
+    render(<App client={createClient()} />)
+
+    await user.click(screen.getByRole('button', { name: '配置数据字段' }))
+    const nameGroup = screen.getByRole('group', { name: '姓名 字段配置' })
+    const kind = within(nameGroup).getByLabelText('数据类型')
+    const source = within(nameGroup).getByLabelText('来源字段')
+    const sensitive = within(nameGroup).getByRole('checkbox', { name: '敏感字段' })
+
+    await user.selectOptions(kind, 'password')
+    expect(sensitive).toBeChecked()
+    expect(sensitive).toBeDisabled()
+
+    await user.selectOptions(kind, 'text')
+    await user.selectOptions(source, 'account.username')
+    expect(sensitive).toBeDisabled()
+    expect(screen.getByLabelText('姓名')).toBeDisabled()
   })
 
   it('shows a safe error when the control-plane call fails', async () => {
@@ -510,69 +542,6 @@ describe('SmartFill console', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('目标站点不在白名单')
     expect(screen.getByRole('button', { name: /启动浏览器填写/ })).toBeEnabled()
-  })
-
-  it('lets the operator confirm an ambiguous field and resume the browser session', async () => {
-    const client = createClient()
-    const baseJob = await client.createBrowserJob({
-      task_id: 'task-1',
-      target_url: 'http://127.0.0.1:8000/demo/target',
-      fields: { 'person.fullName': '张三' },
-    })
-    const waiting: BrowserJob = {
-      ...baseJob,
-      status: 'need_human',
-      message: '请选择姓名控件',
-      intervention: {
-        kind: 'field_mapping',
-        instruction: '为姓名选择正确控件',
-        requires_browser_interaction: true,
-        submission_candidates: [],
-        entry_candidates: [],
-        field_candidates: [{
-          canonical_field: 'person.fullName',
-          candidates: [
-            {
-              element_id: 'sf-human-1',
-              accessible_name: '用户姓名',
-              role: 'textbox',
-              tag: 'input',
-              frame_path: 'main/profile-frame',
-              confidence: 0.92,
-            },
-            {
-              element_id: 'sf-human-2',
-              accessible_name: '',
-              role: '',
-              tag: 'input',
-              frame_path: 'main',
-              confidence: 0,
-            },
-          ],
-        }],
-      },
-    }
-    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
-      onUpdate(waiting)
-      return () => undefined
-    })
-    const user = userEvent.setup()
-    render(<App client={client} />)
-
-    await user.type(screen.getByLabelText('姓名'), '张三')
-    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
-    expect(await screen.findByRole('heading', { name: '需要人工确认' })).toBeVisible()
-    expect(screen.getAllByText(/main\/profile-frame/)[0]).toBeVisible()
-    expect(screen.getByRole('note')).toHaveTextContent('不会尝试破解验证码')
-    expect(screen.getAllByText(/sf-human-2/)[0]).toBeVisible()
-    await user.click(screen.getByRole('button', { name: '确认并重新扫描' }))
-
-    expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {
-      field_mappings: { 'person.fullName': 'sf-human-1' },
-    })
-
-    await user.click(await screen.findByRole('button', { name: '终止任务' }))
-    expect(client.cancelBrowserJob).toHaveBeenCalledWith('job-1')
   })
 
   it('deletes a newly added custom field directly beside its value input', async () => {
@@ -591,21 +560,19 @@ describe('SmartFill console', () => {
       .not.toBeInTheDocument()
   })
 
-  it('sends the selected auto-submit policy and semantic button aliases', async () => {
+  it('sends auto-submit policy without configuring page button aliases', async () => {
     const client = createClient()
     const user = userEvent.setup()
     render(<App client={client} />)
 
     await user.type(screen.getByLabelText('姓名'), '张三')
     await user.selectOptions(screen.getByLabelText('提交策略'), 'auto_submit')
-    await user.clear(screen.getByLabelText('提交按钮别名'))
-    await user.type(screen.getByLabelText('提交按钮别名'), 'Register, 注册')
     await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
 
     expect(client.createBrowserJob).toHaveBeenCalledWith(expect.objectContaining({
       submission: {
         policy: 'auto_submit',
-        button_aliases: ['Register', '注册'],
+        button_aliases: [],
       },
     }))
   })
@@ -640,6 +607,54 @@ describe('SmartFill console', () => {
     )
   })
 
+  it('shows final screenshot execution statistics and a downloadable log', async () => {
+    const client = createClient()
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.type(screen.getByLabelText('姓名'), '张三')
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+
+    expect(await screen.findByText('12.35 秒')).toBeVisible()
+    expect(screen.getByText('4 次截图')).toBeVisible()
+    expect(screen.getByText('4 次模型调用')).toBeVisible()
+    expect(screen.getByText('3 次浏览器动作')).toBeVisible()
+    expect(screen.getByRole('link', { name: '下载统计日志' })).toHaveAttribute(
+      'href',
+      '/api/v1/browser/jobs/job-1/statistics',
+    )
+    expect(screen.getByRole('link', { name: '下载办事文档 1' })).toHaveAttribute(
+      'href',
+      '/api/v1/browser/jobs/job-1/downloads/0',
+    )
+  })
+
+  it('allows an operator to terminate a job while it is executing', async () => {
+    const client = createClient()
+    const baseJob = await client.getJob('job-1')
+    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
+      onUpdate({
+        ...baseJob,
+        status: 'observing',
+        message: '正在分析页面截图',
+      })
+      return () => undefined
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.type(screen.getByLabelText('姓名'), '张三')
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+
+    const stopButton = await screen.findByRole('button', { name: '终止任务' })
+    expect(stopButton).toBeEnabled()
+    await user.click(stopButton)
+
+    await waitFor(() => expect(client.cancelBrowserJob).toHaveBeenCalledWith('job-1'))
+    expect((await screen.findAllByText('已取消')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: '终止任务' })).not.toBeInTheDocument()
+  })
+
   it('requires an explicit click to approve an observed submit candidate', async () => {
     const client = createClient()
     const waiting: BrowserJob = {
@@ -662,7 +677,6 @@ describe('SmartFill console', () => {
         kind: 'submission_confirmation',
         instruction: '请选择提交按钮并明确确认',
         requires_browser_interaction: false,
-        field_candidates: [],
         submission_candidates: [{
           element_id: 'sf-submit-job-0',
           accessible_name: 'Register',
@@ -690,63 +704,212 @@ describe('SmartFill console', () => {
     await user.click(screen.getByRole('button', { name: '确认并提交一次' }))
 
     expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {
-      field_mappings: {},
       approve_submission: true,
       submit_element_id: 'sf-submit-job-0',
     })
   })
 
-  it('clicks a configured login entry during scan and loads discovered fields', async () => {
-    const client = createClient()
-    const user = userEvent.setup()
-    render(<App client={client} />)
+  it('does not expose legacy page scanning or DOM field mapping controls', () => {
+    render(<App client={createClient()} />)
 
-    await user.selectOptions(screen.getByLabelText('进入表单方式'), 'click')
-    await user.clear(screen.getByLabelText('入口按钮别名'))
-    await user.type(screen.getByLabelText('入口按钮别名'), '登录, Login')
-    await user.click(screen.getByRole('button', { name: '扫描页面字段' }))
-
-    expect(client.scanPage).toHaveBeenCalledWith({
-      target_url: expect.stringMatching(/^http:\/\/(localhost|127\.0\.0\.1):8000\/demo\/target$/),
-      entry_action: { mode: 'click', aliases: ['登录', 'Login'] },
-    })
-    expect(await screen.findByText(/已从.*demo\/login.*发现 2 个字段/)).toBeVisible()
-    expect(screen.getByLabelText('密码')).toHaveAttribute('type', 'password')
+    expect(screen.queryByRole('button', { name: '扫描页面字段' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '配置字段映射' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('动态字段映射配置')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('入口按钮别名')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('提交按钮别名')).not.toBeInTheDocument()
   })
 
-  it('replays the login entry action before filling the discovered fields', async () => {
+  it('uses visual AUTO entry planning without configured aliases', async () => {
     const client = createClient()
     const user = userEvent.setup()
     render(<App client={client} />)
 
-    await user.selectOptions(screen.getByLabelText('进入表单方式'), 'click')
     await user.type(screen.getByLabelText('用户名'), 'demo-user')
     await user.type(screen.getByLabelText('登录密码'), 'temporary-password')
     await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
 
     expect(client.createBrowserJob).toHaveBeenCalledWith(expect.objectContaining({
       entry_action: expect.objectContaining({
-        mode: 'click',
-        aliases: expect.arrayContaining(['登录', 'Login']),
+        mode: 'auto',
+        aliases: [],
       }),
     }))
   })
 
-  it('shows a safe message when page scan finds no supported fields', async () => {
+  it('sends an identity switch, natural-language target, and five-second cadence', async () => {
     const client = createClient()
-    vi.mocked(client.scanPage).mockResolvedValue({
-      initial_url: 'http://127.0.0.1:8000/',
-      final_url: 'http://127.0.0.1:8000/login',
-      entry_action_performed: true,
-      fields: [],
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.selectOptions(screen.getByLabelText('账户流程'), 'login')
+    await user.clear(screen.getByLabelText('目标任务描述'))
+    await user.type(
+      screen.getByLabelText('目标任务描述'),
+      '找到填写房产认证信息的入口并填写资料',
+    )
+    await user.type(screen.getByLabelText('姓名'), '张三')
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+
+    expect(client.createBrowserJob).toHaveBeenCalledWith(expect.objectContaining({
+      target_intent: '找到填写房产认证信息的入口并填写资料',
+      authentication_mode: 'login',
+      observation_interval_seconds: 5,
+    }))
+  })
+
+  it('configures a reusable manual-login session and confirms browser login', async () => {
+    const client = createClient()
+    const baseJob = await client.createBrowserJob({
+      task_id: 'task-1',
+      target_url: 'http://127.0.0.1:8000/',
+      fields: {},
+      target_intent: '进入房产认证',
+    })
+    vi.mocked(client.createBrowserJob).mockClear()
+    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
+      onUpdate({
+        ...baseJob,
+        status: 'need_human',
+        message: '等待人工登录',
+        intervention: {
+          kind: 'manual_login',
+          instruction: '请在目标浏览器完成短信验证',
+          requires_browser_interaction: true,
+          submission_candidates: [],
+          entry_candidates: [],
+        },
+      })
+      return () => undefined
     })
     const user = userEvent.setup()
     render(<App client={client} />)
 
-    await user.click(screen.getByRole('button', { name: '扫描页面字段' }))
+    await user.selectOptions(screen.getByLabelText('账户流程'), 'manual')
+    await user.type(screen.getByLabelText('登录会话标识'), 'property-account')
+    await user.type(
+      screen.getByLabelText('登录心跳 URL'),
+      'http://127.0.0.1:8000/session/heartbeat?token=unsafe',
+    )
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+    expect(await screen.findByText('登录心跳 URL 不能包含查询参数或片段')).toBeVisible()
+    expect(client.createBrowserJob).not.toHaveBeenCalled()
+    await user.clear(screen.getByLabelText('登录心跳 URL'))
+    await user.type(
+      screen.getByLabelText('登录心跳 URL'),
+      'http://127.0.0.1:8000/session/heartbeat',
+    )
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('没有发现可填写字段')
-    expect(screen.getByRole('button', { name: '扫描页面字段' })).toBeEnabled()
+    expect(client.createBrowserJob).toHaveBeenCalledWith(expect.objectContaining({
+      authentication_mode: 'manual',
+      authentication_session_key: 'property-account',
+      heartbeat_url: 'http://127.0.0.1:8000/session/heartbeat',
+      heartbeat_interval_seconds: 300,
+    }))
+    expect(await screen.findByText('请在目标浏览器完成短信验证')).toBeVisible()
+    const launchButton = screen.getByRole('button', { name: /启动浏览器填写/ })
+    expect(launchButton).toBeDisabled()
+    await user.click(launchButton)
+    expect(client.createBrowserJob).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: '我已完成登录，继续执行' }))
+    expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {
+      manual_login_completed: true,
+    })
+  })
+
+  it('resumes a visual review without asking for DOM field mappings', async () => {
+    const client = createClient()
+    const baseJob = await client.createBrowserJob({
+      task_id: 'task-1',
+      target_url: 'http://127.0.0.1:8000/',
+      fields: { 'person.fullName': '张三' },
+    })
+    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
+      onUpdate({
+        ...baseJob,
+        status: 'need_human',
+        message: '页面需要人工处理',
+        intervention: {
+          kind: 'visual_review',
+          instruction: '关闭遮挡后继续视觉识别',
+          requires_browser_interaction: true,
+          submission_candidates: [],
+          entry_candidates: [],
+        },
+      })
+      return () => undefined
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.type(screen.getByLabelText('姓名'), '张三')
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+    expect(await screen.findByText('关闭遮挡后继续视觉识别')).toBeVisible()
+    expect(screen.queryByText(/候选控件/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '处理完成，继续视觉识别' }))
+
+    expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {})
+  })
+
+  it('asks for missing customer data and resumes the retained session', async () => {
+    const client = createClient()
+    const baseJob = await client.createBrowserJob({
+      task_id: 'task-1',
+      target_url: 'http://127.0.0.1:8000/',
+      fields: {},
+      target_intent: '填写房产认证资料',
+    })
+    vi.mocked(client.connectJobStream).mockImplementation((_jobId, onUpdate) => {
+      onUpdate({
+        ...baseJob,
+        status: 'need_human',
+        message: '缺少目标表单必填资料',
+        intervention: {
+          kind: 'data_required',
+          instruction: '请补充以下客户资料',
+          requires_browser_interaction: false,
+          submission_candidates: [],
+          entry_candidates: [],
+          missing_fields: [
+            {
+              key: 'property.certificateNumber',
+              display_name: '房产证号',
+              input_kind: 'text',
+              sensitive: true,
+              reason: '目标表单必填',
+            },
+            {
+              key: 'property.usage',
+              display_name: '房屋用途',
+              input_kind: 'select',
+              sensitive: false,
+              reason: '目标表单必填',
+            },
+          ],
+        },
+      })
+      return () => undefined
+    })
+    const user = userEvent.setup()
+    render(<App client={client} />)
+
+    await user.clear(screen.getByLabelText('目标任务描述'))
+    await user.type(screen.getByLabelText('目标任务描述'), '填写房产认证资料')
+    await user.click(screen.getByRole('button', { name: /启动浏览器填写/ }))
+    const missing = await screen.findByLabelText('房产证号')
+    expect(missing).toHaveAttribute('type', 'password')
+    await user.type(missing, '沪房权证123456')
+    const usage = screen.getByLabelText('房屋用途')
+    expect(usage).toHaveAttribute('type', 'text')
+    await user.type(usage, '住宅')
+    await user.click(screen.getByRole('button', { name: '补齐资料并继续' }))
+
+    expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {
+      field_values: {
+        'property.certificateNumber': '沪房权证123456',
+        'property.usage': '住宅',
+      },
+    })
   })
 
   it('allows an operator to select an ambiguous login entry and resume', async () => {
@@ -765,7 +928,6 @@ describe('SmartFill console', () => {
         kind: 'entry_action_confirmation',
         instruction: '选择登录入口',
         requires_browser_interaction: false,
-        field_candidates: [],
         submission_candidates: [],
         entry_candidates: [{
           element_id: 'sf-entry-job-0',
@@ -790,7 +952,6 @@ describe('SmartFill console', () => {
     await user.click(screen.getByRole('button', { name: '确认并进入登录页' }))
 
     expect(client.resolveBrowserJob).toHaveBeenCalledWith('job-1', {
-      field_mappings: {},
       approve_entry_action: true,
       entry_element_id: 'sf-entry-job-0',
     })

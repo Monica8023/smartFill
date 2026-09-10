@@ -52,26 +52,32 @@ export interface InterventionCandidate {
   confidence: number
 }
 
-export interface FieldCandidateSet {
-  canonical_field: string
-  candidates: InterventionCandidate[]
-}
-
 export interface HumanIntervention {
-  kind: 'field_mapping' | 'human_challenge' | 'verification' | 'submission_confirmation' | 'entry_action_confirmation'
+  kind: 'visual_review' | 'human_challenge' | 'verification' | 'submission_confirmation' | 'entry_action_confirmation' | 'data_required' | 'manual_login'
   instruction: string
-  field_candidates: FieldCandidateSet[]
   submission_candidates: InterventionCandidate[]
   entry_candidates: InterventionCandidate[]
   requires_browser_interaction: boolean
+  missing_fields?: RequiredDataField[]
 }
 
 export interface HumanResolution {
-  field_mappings: Record<string, string>
   approve_submission?: boolean
   submit_element_id?: string | null
   approve_entry_action?: boolean
   entry_element_id?: string | null
+  field_values?: Record<string, string>
+  manual_login_completed?: boolean
+}
+
+export type AuthenticationMode = 'none' | 'login' | 'register' | 'manual'
+
+export interface RequiredDataField {
+  key: string
+  display_name: string
+  input_kind: FieldInputKind
+  sensitive: boolean
+  reason: string
 }
 
 export type EntryActionMode = 'auto' | 'direct' | 'click'
@@ -100,16 +106,16 @@ export interface FieldDefinition {
   autocomplete_hints: string[]
 }
 
-export interface PageScanRequest {
-  target_url: string
-  entry_action: EntryActionConfig
-}
-
-export interface PageScanResult {
-  initial_url: string
-  final_url: string
-  entry_action_performed: boolean
-  fields: FieldDefinition[]
+export interface ExecutionStatistics {
+  duration_ms: number
+  screenshot_count: number
+  model_call_count: number
+  model_latency_ms: number
+  browser_action_count: number
+  click_count: number
+  scroll_count: number
+  wait_count: number
+  fill_count: number
 }
 
 export interface BrowserJob {
@@ -142,12 +148,21 @@ export interface BrowserJob {
       field_definitions: FieldDefinition[]
       entry_action: EntryActionConfig
       submission: SubmissionConfig
+      target_intent?: string
+      authentication_mode?: AuthenticationMode
+      observation_interval_seconds?: number
+      authentication_session_key?: string | null
+      heartbeat_url?: string | null
+      heartbeat_interval_seconds?: number
     }>
   }
   screenshot_url: string | null
+  download_urls?: string[]
   intervention?: HumanIntervention | null
   diagnostic_id?: string | null
   diagnostic_url?: string | null
+  statistics?: ExecutionStatistics | null
+  statistics_url?: string | null
   browser_session_open?: boolean
   events: JobEvent[]
   created_at: string
@@ -163,6 +178,12 @@ export interface BrowserJobPayload {
   entry_action?: EntryActionConfig
   workflow_steps?: WorkflowStepPayload[]
   keep_browser_open?: boolean
+  target_intent?: string
+  authentication_mode?: AuthenticationMode
+  observation_interval_seconds?: number
+  authentication_session_key?: string | null
+  heartbeat_url?: string | null
+  heartbeat_interval_seconds?: number
 }
 
 export interface WorkflowStepPayload {
@@ -173,6 +194,12 @@ export interface WorkflowStepPayload {
   field_definitions?: FieldDefinition[]
   submission?: SubmissionConfig
   entry_action?: EntryActionConfig
+  target_intent?: string
+  authentication_mode?: AuthenticationMode
+  observation_interval_seconds?: number
+  authentication_session_key?: string | null
+  heartbeat_url?: string | null
+  heartbeat_interval_seconds?: number
 }
 
 export interface TargetOriginSettings {
@@ -238,7 +265,6 @@ export interface CreateBatchPayload {
 }
 
 export interface SmartFillClient {
-  scanPage(payload: PageScanRequest): Promise<PageScanResult>
   createTask(payload: {
     name: string
     target_origin: string
@@ -264,13 +290,6 @@ export interface SmartFillClient {
 
 export class HttpSmartFillClient implements SmartFillClient {
   constructor(private readonly getToken: () => string) {}
-
-  scanPage(payload: PageScanRequest): Promise<PageScanResult> {
-    return this.request('/api/v1/browser/page-scan', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    })
-  }
 
   createTask(payload: {
     name: string
